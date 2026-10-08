@@ -89,16 +89,81 @@ for local packaging checks. PyInstaller does not cross-compile; an arm64
 backend must never be shipped inside an x64 Electron app. The two output
 trees are `dist-py/mac-arm64/locwarp-backend` and
 `dist-py/mac-x64/locwarp-backend`. `npm run dist:mac -- --arm64` (or `--x64`)
-only packages already built inputs. Without an architecture flag, both
-backend trees must exist. A packaging hook rejects missing/incomplete or
+only packages already built inputs and defaults to the Node host architecture.
+A packaging hook rejects missing/incomplete or
 wrong-architecture backend inputs before producing an app. Outputs are in `frontend/release/`, with the
 architecture in each artifact name. No universal binary is claimed.
+
+### Local ad-hoc signing (default)
+
+`bash build-macos.sh arm64` and `npm run dist:mac -- --arm64` default to
+`LOCWARP_MAC_SIGNING=local`: electron-builder first assembles `--dir` with
+`identity=null`, hardened runtime off and notarization off. This intermediate
+App is not accepted as signed. The local driver then uses `/usr/bin/codesign`
+on nested Mach-O files and bundles as needed, preserving valid PyInstaller
+signatures and existing entitlements, and seals the outer App last with
+`--sign - --timestamp=none`. It requires `codesign --verify --deep --strict`
+before archiving with electron-builder `--prepackaged`; that path does not
+re-sign the App. Local archives use store compression for bounded build time.
+
+Inherited `CSC_*` and `APPLE_*` credentials are removed from the packaging
+child process. No private key access or permission dialogs are needed. Local
+hardened runtime is off; SIP/Gatekeeper/TCC remain unchanged. The source
+PyInstaller bundle is not modified. Invalid nested bundle seals (including
+the collected Python framework) are repaired only in the assembled app; valid
+backend executable signatures are retained. Each builder stage has a 600s timeout;
+native signing has a 600s total deadline, 30s per command and 60s for final
+verification. Failure stops the pipeline without automatic retries or archives
+from an unverified App. The v26 osx-sign route stalled during local validation;
+the local path deliberately avoids it and Apple's timestamp service.
+
+Ad-hoc signing proves bundle integrity, not Apple trust. `spctl --assess --type
+execute` may still reject these artifacts because they lack Developer ID and
+notarization. Do not distribute them as trusted releases or change Gatekeeper
+settings to make the assessment pass. No notarization is claimed.
+
+For an app-only check with existing native backend and frontend build inputs:
+
+```bash
+cd frontend
+LOCWARP_MAC_DIR_ONLY=1 npm run dist:mac -- --arm64
+codesign --verify --deep --strict release/mac-arm64/LocWarp.app
+# Full local pipeline assembles, signs, verifies, then creates DMG and ZIP:
+npm run dist:mac -- --arm64
+hdiutil verify release/LocWarp-*.dmg
+unzip -tq release/LocWarp-*.zip
+# An ad-hoc app may fail this assessment; it is not notarized:
+spctl --assess --type execute --verbose=4 release/mac-arm64/LocWarp.app
+```
+
+Use the exact artifact filenames if multiple versions/architectures exist.
+On Intel use `--x64` and `release/mac/LocWarp.app`. These checks do not
+launch Electron, access a phone, or change security permissions.
+
+### Developer ID release (explicit, fail closed)
 
 For public distribution, configure a Developer ID Application certificate
 with electron-builder's `CSC_LINK`/`CSC_KEY_PASSWORD` mechanism and its
 notarization credentials (e.g. `APPLE_API_KEY`, `APPLE_API_KEY_ID`,
 `APPLE_API_ISSUER`). Keep these outside source control. The default macOS
-configuration retains hardened runtime and electron-builder signing;
+release mode enables hardened runtime, requires signing and notarization,
+and rejects missing configuration rather than falling back to ad-hoc signing:
+
+```bash
+# Certificate/notarization credentials must already be configured securely.
+LOCWARP_MAC_SIGNING=developer-id \
+LOCWARP_MAC_SIGNING_IDENTITY='Developer ID Application: Your Name (TEAMID)' \
+bash build-macos.sh arm64
+```
+
+Supply a complete API-key or Apple-ID credential set listed above, or use
+`APPLE_KEYCHAIN_PROFILE` (and optional `APPLE_KEYCHAIN`) for an existing
+notarytool profile. Select a certificate accessible without an interactive
+private-key prompt in your release environment. Local checks do not exercise
+this credential-dependent release mode. Unknown signing modes fail early.
+The wrapper removes the certificate-type prefix for v26's identity qualifier.
+
+For the release artifacts,
 verify nested PyInstaller Mach-O libraries are signed, then verify the app
 and DMG with `codesign --verify --deep --strict`, `spctl --assess --type execute`
 and `xcrun stapler validate`. Test installation on a clean Mac of each

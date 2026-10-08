@@ -11,7 +11,7 @@
     "start": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "dist": "electron-builder --win nsis",
     "test": "node --test electron/*.test.js",
-    "dist:mac": "electron-builder --mac dmg zip --publish never"
+    "dist:mac": "node build/package-macos.js"
   },
   "dependencies": {
     "@maplibre/maplibre-gl-leaflet": "^0.1.3",

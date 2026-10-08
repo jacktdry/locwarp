@@ -4,6 +4,9 @@ cd "$(dirname "$0")"
 ROOT="$PWD"
 export PYINSTALLER_CONFIG_DIR="$ROOT/build-py/pyinstaller-cache"
 [[ "$(uname -s)" == Darwin ]] || { echo 'Build on macOS, not by cross-compiling.' >&2; exit 1; }
+# Default: sealed local ad-hoc app; release mode requires explicit identity
+# and notarization configuration. Validate before installing/building.
+node frontend/build/package-macos.js --check
 PYTHON="${LOCWARP_PYTHON:-python3.13}"
 ARCH="$("$PYTHON" -c 'import platform, sys; assert sys.version_info[:2] == (3, 13), "Python 3.13 required"; print({"arm64":"arm64", "x86_64":"x64"}[platform.machine()])')"
 [[ "${1:-$ARCH}" == "$ARCH" ]] || { echo "Python architecture is $ARCH; use a matching host/Python for ${1}." >&2; exit 1; }
@@ -28,8 +31,7 @@ cd frontend
 # npm ci is intentionally separate; do not mutate an ongoing installation.
 npm test
 npm run build
-if [[ "${LOCWARP_MAC_DIR_ONLY:-0}" == 1 ]]; then
-  npx --no-install electron-builder --mac --dir "--$ARCH" --publish never
-else
-  npm run dist:mac -- "--$ARCH"
-fi
+node build/package-macos.js "$ARCH"
+APP_DIR=mac
+[[ "$ARCH" != arm64 ]] || APP_DIR=mac-arm64
+codesign --verify --deep --strict "$ROOT/frontend/release/$APP_DIR/LocWarp.app"
