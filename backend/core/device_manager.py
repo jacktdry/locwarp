@@ -282,7 +282,7 @@ class DeviceManager:
             raise UnsupportedIosVersionError(ios_version_str)
 
         if ver >= (17, 0):
-            conn = await self._connect_tunnel(udid, lockdown, ios_version_str)
+            conn = await self._connect_tunnel(udid, lockdown, ios_version_str, connection_type)
         else:
             conn = self._connect_legacy(udid, lockdown, ios_version_str)
         conn.connection_type = connection_type
@@ -296,17 +296,24 @@ class DeviceManager:
     # -- iOS 17+ via CoreDeviceTunnelProxy ---------------------------------
 
     async def _connect_tunnel(
-        self, udid: str, lockdown, ios_version: str
+        self, udid: str, lockdown, ios_version: str, connection_type: str = "USB"
     ) -> _ActiveConnection:
-        """TCP tunnel for iOS 17+ using CoreDeviceTunnelProxy + RSD."""
-        logger.debug("Establishing TCP tunnel for %s (iOS %s)", udid, ios_version)
+        """Use an owned RSD tunnel appropriate for both OS and transport."""
+        logger.debug("Establishing tunnel for %s (iOS %s, %s)", udid, ios_version, connection_type)
 
         try:
             if sys.platform == "darwin":
-                # Keep the library-owned relay and RSD alive together. The
-                # kernel utun path below needs root; never elevate Electron.
-                from pymobiledevice3.remote.rsd_tunnel import PreferredRsdTunnel
-                tunnel_ctx = PreferredRsdTunnel(serial=udid, autopair=False)
+                if connection_type == "Network":
+                    # The USB userspace relay can spin in uvloop/UDP after the
+                    # cable is removed. For an already-paired Wi-Fi iPhone,
+                    # borrow Apple's kernel-routable tunnel via remotepairingd.
+                    # This uses no root and holds the assertion until disconnect.
+                    from pymobiledevice3.remote.native_tunnel import NativeRemotedTunnel
+                    tunnel_ctx = NativeRemotedTunnel(serial=udid)
+                else:
+                    # USB keeps its tested no-root userspace path.
+                    from pymobiledevice3.remote.rsd_tunnel import PreferredRsdTunnel
+                    tunnel_ctx = PreferredRsdTunnel(serial=udid, autopair=False)
                 rsd = await tunnel_ctx.__aenter__()
                 return _ActiveConnection(
                     udid=udid,
@@ -339,13 +346,21 @@ class DeviceManager:
             )
         except Exception:
             if sys.platform == "darwin":
-                logger.exception("macOS no-root USB tunnel failed for %s", udid)
+                logger.exception("macOS %s RSD tunnel failed for %s", connection_type, udid)
+                if connection_type == "Network":
+                    raise RuntimeError(
+                        "macOS Wi-Fi 通道無法建立。請確認手機與 Mac 位於同一個 Wi-Fi、"
+                        "iPhone 已解鎖，且已透過 Finder / Xcode 完成配對。"
+                        "若有 VPN、HomiPlay 等網路軟體，請檢查其網路設定。"
+                        " / macOS Wi-Fi native tunnel failed: verify pairing, local network, "
+                        "device unlock, and VPN routing."
+                    ) from None
                 raise RuntimeError(
                     "macOS USB 通道無法建立。請解鎖並信任 Mac、啟用開發者模式，"
                     "確認 DDI 已掛載並使用 pymobiledevice3 11.26.0 以上版本。"
                     " / macOS USB tunnel failed: check USB trust, Developer Mode, DDI, "
                     "and pymobiledevice3 >=11.26.0."
-                )
+                ) from None
             logger.exception(
                 "TCP tunnel failed for %s (iOS %s). "
                 "Ensure you are running as administrator.",

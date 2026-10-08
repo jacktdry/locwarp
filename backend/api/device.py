@@ -1,3 +1,5 @@
+import sys
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -125,6 +127,13 @@ async def wifi_repair():
          pymobiledevice3 persists the RemotePairing record to
          ~/.pymobiledevice3/ as a side effect of the RSD handshake.
     """
+    if sys.platform == "darwin":
+        # macOS uses Apple's paired Network devices, not this Windows-style
+        # destructive remote record repair flow. Never remove pair records.
+        raise HTTPException(status_code=400, detail={
+            "code": "mac_pair_via_finder",
+            "message": "macOS 請使用 Finder 先透過 USB 配對，再使用掃描裝置連接 Wi-Fi；不需要管理員權限。",
+        })
     from pymobiledevice3.lockdown import create_using_usbmux
     from pymobiledevice3.usbmux import list_devices as mux_list_devices
     from pymobiledevice3.remote.tunnel_service import (
@@ -409,6 +418,11 @@ async def wifi_tunnel_discover():
     """Find iPhones on the local network. First tries mDNS (Bonjour RemotePairing
     broadcast); if that yields nothing, falls back to a /24 subnet TCP scan on the
     standard RemotePairing port (49152)."""
+    if sys.platform == "darwin":
+        # Mac connects paired Network devices through usbmux/Apple remoted.
+        # Avoid the legacy Windows mDNS scanner, which can leave uvloop
+        # repeatedly sending UDP 5353 packets and starve the API loop.
+        return {"devices": []}
     results: list[dict] = []
 
     # --- 1) mDNS / Bonjour broadcast ---
@@ -1480,6 +1494,9 @@ async def connect_device(udid: str):
     from main import app_state
     from core.device_manager import UnsupportedIosVersionError
     dm = _dm()
+    # A DVT/engine init failure must not leave a newly opened tunnel looking
+    # connected in the sidebar on the next scan. Existing sessions are retained.
+    is_new_connection = udid not in dm._connections
     # Group-mode device cap. Allow re-connect of an already-connected udid.
     if udid not in dm._connections and len(dm._connections) >= MAX_DEVICES:
         raise HTTPException(
@@ -1517,6 +1534,15 @@ async def connect_device(udid: str):
             },
         )
     except Exception as e:
+        if is_new_connection and udid in dm._connections:
+            try:
+                await dm.disconnect(udid)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("Failed to clean up a partially initialized device")
+            app_state.simulation_engines.pop(udid, None)
+            if app_state._primary_udid == udid:
+                app_state._primary_udid = next(iter(app_state.simulation_engines), None)
         raise HTTPException(status_code=500, detail=str(e))
 
 

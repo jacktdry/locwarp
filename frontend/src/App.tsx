@@ -389,6 +389,10 @@ const App: React.FC = () => {
   const wifiAutoConnectAttemptedRef = useRef(false)
   useEffect(() => {
     if (!ws.connected) return
+    // macOS uses Finder/usbmux Network discovery and Apple's native remoted
+    // tunnel. The Windows IP/Bonjour discovery below opens an mDNS UDP 5353
+    // socket that can wedge uvloop on this platform after Wi-Fi reconnect.
+    if (typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || navigator.userAgent)) return
     if (wifiAutoConnectAttemptedRef.current) return
     let enabled: boolean
     let savedList: Array<{ ip: string; port: number; udid?: string }> = []

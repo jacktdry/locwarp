@@ -178,29 +178,42 @@ the installed dependency source is the implementation reference.
 
 ## Permissions and known limitations
 
-- **Wi-Fi remains limited:** this repository's RemotePairing runner uses
-  a kernel `utun`, requiring a privileged backend on macOS. A normal
-  packaged app explicitly reports this requirement and directs users to
-  USB. It does not prompt for sudo or run privileged scripts. An isolated,
-  audited privileged backend/helper or a userspace Wi-Fi migration is
-  future work; do not run the whole GUI as root. No end-to-end macOS Wi-Fi
-  support is claimed by this port.
-- For network discovery, pair/trust over USB first; use the same subnet,
-  allow LocWarp local-network access in macOS Privacy & Security, and allow
-  the required traffic through your firewall. The bundle declares local
-  network usage and Bonjour service types. VPNs, AP isolation and sleeping
-  devices can prevent discovery or drop tunnels. Permissions alone do not
-  remove the current Wi-Fi `utun` limitation.
+- **macOS Wi-Fi (native, no root):** pair/trust with Finder over USB and
+  enable Wi-Fi connections, then unplug USB. When macOS `usbmuxd` reports
+  the device with connection type `Network`, LocWarp now holds a
+  `NativeRemotedTunnel(serial=udid)` via Apple's `remotepairingd`; it does
+  not use the USB userspace PyTCP relay or the privileged kernel `utun`.
+  Users may click **Scan devices** to reconnect an already-paired device;
+  there is no Windows-style RemotePairing record repair on macOS.
+  Wi-Fi scan visibility is not proof of a working DVT service; the actual
+  RSD connection and device location functions must still pass real UAT.
+- The native tunnel shares Apple's single RSD link: Apple's `remoted` and
+  LocWarp may temporarily evict each other's RSD sessions, affecting
+  Xcode/devicectl and causing reconnects. Avoid concurrent device tools
+  during tests. The standalone iOS 27.0.1 no-root native Wi-Fi RSD open and
+  close passed real-device verification on 2026-10-09, but prolonged
+  LocWarp GUI/position simulation stability has **not** yet passed UAT.
+  Earlier macOS builds were observed driving CPU near 100% and causing API
+  timeouts while a legacy Windows Wi-Fi auto-discovery flow also opened a
+  Bonjour/mDNS UDP 5353 socket. The macOS UI no longer starts that Windows
+  discovery loop and the backend rejects the legacy discovery/repair APIs
+  on macOS. The native transport change and mDNS guard both still require
+  real prolonged UAT to prove stable operation.
+- The legacy manually-entered IP/RemotePairing tunnel runner still needs
+  privileged kernel `utun` on macOS, so its Windows-oriented UI is hidden
+  on Mac. Do not run the whole GUI as root. No privileged helper is bundled.
+  For discovery use the same local network, allow LocWarp local-network
+  access, and check VPN/HomiPlay routing, firewall, AP isolation and sleep.
 - macOS **Locate PC uses only IP geolocation**, contacting the existing
   HTTPS providers on explicit button use. It exposes your public IP to
   those providers, may return a VPN exit city, and the displayed 5 km
   accuracy is a heuristic, not a measured confidence radius. There is no
   CoreLocation/GPS helper, so no location permission is requested or
   advertised. Results are labeled as IP; manual map selection works offline.
-- pymobiledevice3's userspace transport currently has a process-wide
-  singleton: one userspace iOS 17+ device at a time on macOS. The upstream
-  three-device claim has not been validated on this transport. Native
-  remoted fallback can be sensitive to concurrent Xcode/device tools.
+- pymobiledevice3's **USB** userspace transport has a process-wide
+  singleton: one userspace iOS 17+ tunnel at a time. Multi-device mixes
+  including native Wi-Fi remain unverified. Native remoted can conflict
+  with concurrent Xcode/device tools as noted above.
 - iOS 16 legacy transport is retained; all iPhone operations and Intel
   binaries still require real-device/host acceptance. Merely building or
   importing a bundle does not prove GPS simulation works.
@@ -218,4 +231,9 @@ dialog, Cmd+Q, close/reopen, backend exit and a clean port on an isolated
 machine **with no iPhone attached**. Device acceptance (USB trust, DDI,
 disconnect/reconnect and any intentional GPS simulation) is a separate,
 explicitly supervised activity. Wi-Fi, Intel runtime, Developer ID signing
-and notarization remain separate release gates.
+and notarization remain separate release gates. In a Mac Wi-Fi UAT, keep
+USB unplugged when launching the app, confirm `Network` + `is_connected`
+from `/api/device/list`, verify a responsive API for at least several
+minutes, then perform an explicit GPS teleport and restore only with the
+owner present. USB-to-Wi-Fi hot handoff after removing the cable while a
+userspace USB tunnel is active is a separate unverified stress case.

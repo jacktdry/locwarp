@@ -49,6 +49,9 @@ const DeviceStatus: React.FC<DeviceStatusProps> = ({
   onTogglePin,
 }) => {
   const t = useT();
+  // Windows' privileged RemotePairing repair/tunnel UI must not be offered
+  // on macOS: paired network devices use Apple's no-root remoted transport.
+  const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || navigator.userAgent);
   const [showDropdown, setShowDropdown] = useState(false);
   const [tunnelIp, setTunnelIp] = useState(() => localStorage.getItem('locwarp.tunnel.ip') || '');
   const [tunnelPort, setTunnelPort] = useState(() => localStorage.getItem('locwarp.tunnel.port') || '');
@@ -480,8 +483,23 @@ const DeviceStatus: React.FC<DeviceStatusProps> = ({
         </div>
       )}
 
-      {/* WiFi Connection Section — collapsible with iOS version tabs */}
-      {(onStartWifiTunnel || onWifiConnect) && (
+      {/* macOS uses paired Network devices reported by usbmuxd and Apple's remoted.
+          There is no IP/port/administrator repair step: regular device scan connects. */}
+      {isMac && (
+        <div style={{ borderTop: '1px solid #333', paddingTop: 10, marginTop: 6 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{t('wifi.mac_title')}</div>
+          <p style={{ fontSize: 11, opacity: 0.8, lineHeight: 1.65, margin: '0 0 8px', whiteSpace: 'pre-line' }}>
+            {t('wifi.mac_help')}
+          </p>
+          <button onClick={onScan} style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #6c8cff',
+            borderRadius: 5, background: 'rgba(108,140,255,0.13)', color: '#9ab0ff', cursor: 'pointer' }}>
+            {t('wifi.mac_scan')}
+          </button>
+        </div>
+      )}
+
+      {/* The IP/port tunnel + RemotePairing repair section is Windows-only. */}
+      {!isMac && (onStartWifiTunnel || onWifiConnect) && (
         <div style={{ borderTop: '1px solid #333', paddingTop: 8, marginTop: 4 }}>
           {/* Collapsible header */}
           <button
