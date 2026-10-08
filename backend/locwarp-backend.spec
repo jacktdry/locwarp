@@ -2,6 +2,9 @@
 # PyInstaller spec for LocWarp backend (Python 3.13).
 # Build: py -3.13 -m PyInstaller backend/locwarp-backend.spec --noconfirm
 
+import sys
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
 
 # pymobiledevice3 has a LOT of dynamic imports — collect everything
@@ -9,6 +12,11 @@ pmd_datas, pmd_binaries, pmd_hiddenimports = collect_all('pymobiledevice3')
 
 # pytun_pmd3 ships wintun.dll as a data file that ctypes loads at runtime
 pytun_datas, pytun_binaries, pytun_hidden = collect_all('pytun_pmd3')
+if sys.platform == 'darwin':
+    # ctypes imports only the Darwin implementation; never ship Windows DLLs.
+    pytun_datas = [(src, dest) for src, dest in pytun_datas if not src.lower().endswith('.dll')]
+    pytun_binaries = [(src, dest) for src, dest in pytun_binaries if not src.lower().endswith('.dll')]
+    pytun_hidden = [name for name in pytun_hidden if name not in ('pytun_pmd3.wintun', 'pytun_pmd3.linux')]
 
 # pmd_pytcp is the userspace TCP/IP stack pymobiledevice3 11.x uses for the
 # RemotePairing WiFi tunnel (remote/userspace_tunnel.py). It resolves its
@@ -35,7 +43,9 @@ ddi_datas, ddi_binaries, ddi_hidden = collect_all('developer_disk_image')
 # the bundle so importlib.metadata finds it. Also collect_all for the
 # python files and any companion binaries.
 pyimg4_datas, pyimg4_binaries, pyimg4_hidden = collect_all('pyimg4')
-pyimg4_meta = copy_metadata('pyimg4')
+# pyimg4 0.8+ imports apple_compress, which also resolves its own version
+# through distribution metadata. Include dependency metadata for frozen DDI.
+pyimg4_meta = copy_metadata('pyimg4', recursive=True)
 
 # uvicorn/fastapi also need their sub-modules collected
 uvicorn_hidden = collect_submodules('uvicorn')
@@ -82,13 +92,13 @@ hidden = [
 ]
 
 a = Analysis(
-    ['main.py'],
-    pathex=['.'],
+    [str(Path(SPECPATH) / 'main.py')],
+    pathex=[SPECPATH],
     binaries=[*pmd_binaries, *pytun_binaries, *pytcp_binaries, *ddi_binaries, *pyimg4_binaries,
               *ps_binaries],
     datas=[*pmd_datas, *pytun_datas, *pytcp_datas, *ddi_datas, *pyimg4_datas, *pyimg4_meta,
            *ps_datas,
-           ('static/phone.html', 'static')],
+           (str(Path(SPECPATH) / 'static/phone.html'), 'static')],
     hiddenimports=hidden,
     hookspath=[],
     hooksconfig={},

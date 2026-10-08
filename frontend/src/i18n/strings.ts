@@ -41,7 +41,7 @@ export const STRINGS = {
   'status.restore_all': { zh: '全部還原', en: 'Restore all' },
   'status.set_initial': { zh: '起始地圖位置', en: 'Startup map view' },
   'status.locate_pc': { zh: '定位電腦', en: 'Locate PC' },
-  'status.locate_pc_tooltip': { zh: '抓取此電腦的目前位置 (Wi-Fi 定位, 會有誤差)', en: 'Detect this PC location via Wi-Fi positioning (some inaccuracy expected)' },
+  'status.locate_pc_tooltip': { zh: '取得電腦位置（Windows 定位／macOS IP 粗略定位，會有誤差）', en: 'Locate PC (Windows Location / macOS coarse IP location; may be inaccurate)' },
   'status.locate_pc_dialog_title': { zh: '定位到電腦當前位置', en: 'Locate to PC current position' },
   'status.locate_pc_accuracy': { zh: '定位精準度: 約 ±{m} 公尺', en: 'Location accuracy: ±{m}m' },
   'status.locate_pc_fly': { zh: '畫面過去+飛過去 (會定位)', en: 'Pan map + fly (will set iPhone GPS)' },

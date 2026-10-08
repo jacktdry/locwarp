@@ -1,9 +1,31 @@
 import asyncio
 import json
 import logging
+import sys
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+# Packaging check only: no API listener, device discovery or GPS operation.
+if __name__ == "__main__" and sys.argv[1:] == ["--self-test"]:
+    import importlib
+    import importlib.metadata
+    for module in (
+        "pymobiledevice3.remote.tunnel_service",
+        "pymobiledevice3.remote.userspace_tunnel",
+        "pymobiledevice3.services.mobile_image_mounter",
+        "pmd_pytcp", "pytun_pmd3", "pyimg4", "psutil",
+        "fastapi", "uvicorn.protocols.websockets.websockets_sansio_impl",
+    ):
+        importlib.import_module(module)
+    if sys.platform == "darwin":
+        importlib.import_module("pymobiledevice3.remote.rsd_tunnel")
+        importlib.import_module("pymobiledevice3.remote.native_tunnel")
+    importlib.metadata.version("pyimg4")
+    static_root = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+    assert (static_root / "static" / "phone.html").is_file(), "Missing phone UI"
+    print(f"LocWarp backend self-test OK: {sys.platform}, Python {sys.version.split()[0]}")
+    sys.exit(0)
 
 import uvicorn
 from fastapi import FastAPI

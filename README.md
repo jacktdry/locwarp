@@ -1,5 +1,8 @@
 # LocWarp
 
+此 fork 加入 Apple Silicon／Intel 的 macOS USB 與封裝支援。詳見
+[macOS 設定、開發、發行步驟與限制](docs/MACOS.md)。macOS Wi-Fi 與手機實機驗收尚未完成；電腦定位採 IP 粗略定位。
+
 **在 Windows 上控制 iPhone / iPad GPS 定位的虛擬定位工具。** 免越獄,透過 USB 或 WiFi 連線,支援瞬移、導航、多點路徑、花農繞圈、隨機漫步與搖桿操作,最多可同時控制三台裝置。
 
 <p align="right">

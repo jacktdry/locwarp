@@ -2,6 +2,10 @@
 
 **A Windows tool that controls the GPS location of an iPhone or iPad.** No jailbreak. Works over USB or Wi-Fi, with Teleport, Navigate, Multi-point Route, Flower Farmer circling, Random Walk, and Joystick modes, and can drive up to three devices at once.
 
+This fork also includes a macOS USB/packaging port for Apple Silicon and Intel.
+See [macOS setup, development, release steps and limitations](docs/MACOS.md).
+macOS Wi-Fi and real-device acceptance are not yet complete; desktop location uses coarse IP positioning.
+
 <p align="right">
   <a href="README.md"><img alt="繁體中文" src="https://img.shields.io/badge/繁體中文-gray?style=flat-square"></a>
   <a href="README.en.md"><img alt="English" src="https://img.shields.io/badge/English-active-2d3748?style=flat-square"></a>

@@ -9,6 +9,8 @@ release it via a stop event.
 
 import asyncio
 import logging
+import os
+import sys
 
 logger = logging.getLogger("wifi_tunnel")
 
@@ -101,6 +103,13 @@ class TunnelRunner:
         Raises asyncio.TimeoutError on timeout or the underlying exception
         if the tunnel setup failed before becoming ready.
         """
+        # Unlike USB, this runner uses a kernel utun. Fail before creating a
+        # task or touching pairing; never request automatic elevation.
+        if sys.platform == "darwin" and os.geteuid() != 0:
+            raise PermissionError(
+                "macOS Wi-Fi 通道需要具權限的 utun 背景服務；一般 App 請使用 USB。"
+                " / macOS Wi-Fi requires a privileged utun backend; use USB in the normal app."
+            )
         self._stop = asyncio.Event()
         self._ready = asyncio.Event()
         self._error = None

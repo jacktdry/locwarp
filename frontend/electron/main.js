@@ -4,6 +4,7 @@ const { spawn } = require('child_process')
 const http = require('http')
 const os = require('os')
 const fs = require('fs')
+const { backendExecutable, locatePc, macBackendError, applicationMenu } = require('./platform')
 
 // Render-mode preference (Issue #24). Win 10 stays on software rendering
 // by default — v0.2.121/125 hit a Chromium 124 GPU-sandbox crash on
@@ -248,44 +249,21 @@ ipcMain.handle('set-render-mode', (_e, mode) => {
 })
 
 ipcMain.handle('relaunch-app', () => {
+  stopBackend()
   app.relaunch()
   app.exit(0)
 })
 
-ipcMain.handle('locate-pc', async () => {
-  const win = await tryWindowsLocation()
-  if (win.ok) return { ...win, via: 'windows' }
-  if (win.code === 'DENIED') return win
-  // Windows Location returned NODATA / TIMEOUT / ERROR / UNKNOWN. Fall
-  // back to IP geolocation from the main process so the request is
-  // free of any renderer CORS / CSP restrictions.
-  const ip = await ipFallback()
-  if (ip) return ip
-  // Both layers failed — surface the original Windows error so the
-  // dialog can show the user something diagnostic instead of just
-  // "everything failed".
-  return {
-    ok: false,
-    code: 'ALL_FAILED',
-    message: `Windows Location: ${win.code}${win.message ? ' (' + win.message + ')' : ''} | IP fallback: all 3 services unreachable`,
-  }
-})
+ipcMain.handle('locate-pc', () => locatePc(process.platform, tryWindowsLocation, ipFallback))
 
-// Strip the default "File Edit View Window Help" menubar — LocWarp has its
-// own in-window controls and the native menu only adds noise on Windows.
-Menu.setApplicationMenu(null)
+const menuTemplate = applicationMenu(process.platform)
+Menu.setApplicationMenu(menuTemplate ? Menu.buildFromTemplate(menuTemplate) : null)
 
 let mainWindow
 let backendProc = null
 
 function resolveBackendExe() {
-  // In a packaged build, extraResources places files under process.resourcesPath
-  // (e.g.  .../resources/backend/locwarp-backend.exe).  In dev, we don't spawn;
-  // the developer runs `python main.py` manually.
-  if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'backend', 'locwarp-backend.exe')
-  }
-  return null
+  return backendExecutable(process.resourcesPath, process.platform, app.isPackaged)
 }
 
 // The backend exe is an unsigned PyInstaller bundle, which antivirus engines
@@ -295,7 +273,9 @@ function resolveBackendExe() {
 // offer to open the folder so the user can see for themselves it is gone.
 function showBackendMissingDialog(exe, detail) {
   const zh = (app.getLocale() || '').toLowerCase().startsWith('zh')
-  const msg = zh
+  const msg = process.platform === 'darwin'
+    ? macBackendError(app.getLocale() || '', exe, detail)
+    : zh
     ? {
         title: 'LocWarp 無法啟動',
         message: '找不到背景服務 (locwarp-backend.exe)',
@@ -346,6 +326,7 @@ function showBackendMissingDialog(exe, detail) {
 }
 
 function startBackend() {
+  if (backendProc) return
   const exe = resolveBackendExe()
   if (!exe) return
   if (!fs.existsSync(exe)) {
@@ -488,9 +469,20 @@ async function createWindow() {
   }
 }
 
-app.whenReady().then(createWindow)
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  app.whenReady().then(createWindow)
+  app.on('second-instance', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    else {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  })
+}
 app.on('window-all-closed', () => {
-  stopBackend()
   if (process.platform !== 'darwin') app.quit()
 })
 app.on('before-quit', stopBackend)

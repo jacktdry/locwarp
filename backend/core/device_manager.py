@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional
@@ -301,6 +302,20 @@ class DeviceManager:
         logger.debug("Establishing TCP tunnel for %s (iOS %s)", udid, ios_version)
 
         try:
+            if sys.platform == "darwin":
+                # Keep the library-owned relay and RSD alive together. The
+                # kernel utun path below needs root; never elevate Electron.
+                from pymobiledevice3.remote.rsd_tunnel import PreferredRsdTunnel
+                tunnel_ctx = PreferredRsdTunnel(serial=udid, autopair=False)
+                rsd = await tunnel_ctx.__aenter__()
+                return _ActiveConnection(
+                    udid=udid,
+                    lockdown=rsd,
+                    ios_version=ios_version,
+                    tunnel_context=tunnel_ctx,
+                    rsd=rsd,
+                    usbmux_lockdown=lockdown,
+                )
             proxy = await CoreDeviceTunnelProxy.create(lockdown)
             tunnel_ctx = proxy.start_tcp_tunnel()
             tunnel_result = await tunnel_ctx.__aenter__()
@@ -323,6 +338,14 @@ class DeviceManager:
                 usbmux_lockdown=lockdown,
             )
         except Exception:
+            if sys.platform == "darwin":
+                logger.exception("macOS no-root USB tunnel failed for %s", udid)
+                raise RuntimeError(
+                    "macOS USB 通道無法建立。請解鎖並信任 Mac、啟用開發者模式，"
+                    "確認 DDI 已掛載並使用 pymobiledevice3 11.26.0 以上版本。"
+                    " / macOS USB tunnel failed: check USB trust, Developer Mode, DDI, "
+                    "and pymobiledevice3 >=11.26.0."
+                )
             logger.exception(
                 "TCP tunnel failed for %s (iOS %s). "
                 "Ensure you are running as administrator.",
