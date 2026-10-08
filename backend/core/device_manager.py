@@ -133,6 +133,29 @@ class DeviceManager:
     # Discovery
     # ------------------------------------------------------------------
 
+    @staticmethod
+    async def _mac_native_candidates() -> list[dict]:
+        """Browse *paired* macOS Wi-Fi devices without opening a tunnel.
+
+        Apple remotepairingd can retain a device record even while it is
+        temporarily offline. A result is a candidate, never a successful
+        connection; connecting must still prove reachability via native RSD.
+        """
+        if sys.platform != "darwin":
+            return []
+        try:
+            from pymobiledevice3.remote.native_tunnel import browse_native_devices
+            records = await asyncio.wait_for(browse_native_devices(timeout=2), timeout=6)
+            # networkAdvertActive may become false when the screen sleeps,
+            # even for a phone whose native RSD remains connectable. Do not
+            # confuse this discovery hint with successful live connectivity.
+            return [record for record in records
+                    if record.get("udid")
+                    and (record.get("authState") or {}).get("rawCase") == "authenticated"]
+        except Exception:
+            logger.warning("macOS native Wi-Fi discovery unavailable", exc_info=True)
+            return []
+
     async def discover_devices(self) -> list[DeviceInfo]:
         """
         Scan for all iOS devices visible over USB and WiFi (usbmuxd).
@@ -151,7 +174,7 @@ class DeviceManager:
             raw_devices = await list_devices()
         except Exception:
             logger.exception("Failed to list usbmux devices")
-            return devices
+            raw_devices = []
 
         for raw in raw_devices:
             try:
@@ -220,6 +243,7 @@ class DeviceManager:
                 )
                 info.is_connected = True
                 devices.append(info)
+                added_udids.add(udid)
                 logger.debug(
                     "Discovered cached %s device %s (%s) iOS %s (no usbmux entry)",
                     conn.connection_type, info.name, udid, info.ios_version,
@@ -227,6 +251,28 @@ class DeviceManager:
             except Exception:
                 logger.exception("Failed to surface cached connection for %s", udid)
 
+        # USBmux can omit an iPhone even while Apple's own remotepairingd
+        # can establish a no-root Wi-Fi RSD. Expose *paired candidates* here
+        # so users can explicitly connect; no tunnel is opened during scan.
+        if sys.platform == "darwin":
+            native_records = await self._mac_native_candidates()
+            for record in native_records:
+                udid = record["udid"]
+                if udid in added_udids:
+                    continue
+                active = self._connections.get(udid)
+                # A stale Wi-Fi record is not proof the phone is online.
+                # Its OS version is unknown until a real RSD connects.
+                info = DeviceInfo(
+                    udid=udid,
+                    name=(active.name if active else record.get("name"))
+                    or _load_device_name_cache().get(udid, "iPhone"),
+                    ios_version=active.ios_version if active else "0.0",
+                    connection_type=active.connection_type if active else "Network",
+                    is_connected=active is not None,
+                )
+                devices.append(info)
+                added_udids.add(udid)
         return devices
 
     # ------------------------------------------------------------------
@@ -247,18 +293,48 @@ class DeviceManager:
                 logger.info("Device %s is already connected", udid)
                 return
 
-        # Detect connection type from usbmux device list.
+        # Detect connection type from usbmux device list. macOS can also
+        # connect an Apple-native paired Wi-Fi record missing from USBmux.
         connection_type = "USB"
+        in_usbmux = False
         try:
             raw_devices = await list_devices()
             for raw in raw_devices:
                 if raw.serial == udid:
+                    in_usbmux = True
                     connection_type = getattr(raw, "connection_type", "USB")
                     # Prefer USB if device shows up as both
                     if connection_type == "USB":
                         break
         except Exception:
-            logger.debug("Could not determine connection type for %s, assuming USB", udid)
+            logger.debug("Could not determine connection type for %s", udid)
+
+        if sys.platform == "darwin" and not in_usbmux:
+            records = await self._mac_native_candidates()
+            selected = next((r for r in records if r["udid"] == udid), None)
+            if selected is None:
+                raise RuntimeError("找不到已配對的 macOS Wi-Fi iPhone。請解鎖手機、確認同一網路後重新掃描。")
+            conn = await self._connect_tunnel(udid, None, "0.0", "Network")
+            # The OS version only becomes authoritative after the RSD
+            # handshake. Reject unsupported devices and release assertions.
+            rsd = conn.rsd
+            props = (getattr(rsd, "peer_info", None) or {}).get("Properties", {})
+            values = getattr(rsd, "all_values", None) or {}
+            version = (getattr(rsd, "product_version", None)
+                       or values.get("ProductVersion")
+                       or props.get("OSVersion") or "0.0")
+            if _parse_ios_version(version) < (17, 0):
+                await conn.tunnel_context.__aexit__(None, None, None)
+                raise UnsupportedIosVersionError(version)
+            name = values.get("DeviceName") or selected.get("name") or "iPhone"
+            _remember_device_name(udid, name)
+            conn.ios_version = version
+            conn.name = name
+            conn.connection_type = "Network"
+            async with self._lock:
+                self._connections[udid] = conn
+            logger.info("Connected to %s (iOS %s) via macOS native Wi-Fi", udid, version)
+            return
 
         logger.info("Connecting to %s via %s", udid, connection_type)
 

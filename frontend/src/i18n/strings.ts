@@ -258,6 +258,7 @@ export const STRINGS = {
   'wifi.mac_title': { zh: 'macOS Wi-Fi 連線', en: 'macOS Wi-Fi connection' },
   'wifi.mac_help': { zh: '請先以 USB 在 Finder 完成配對並啟用 Wi-Fi 連線，再拔除傳輸線，保持 iPhone 與 Mac 在同一個 Wi-Fi。按「掃描裝置」即可連接，不需管理員權限。VPN、HomiPlay 等網路軟體可能影響裝置探索。', en: 'Pair the iPhone by USB in Finder and enable Wi-Fi connectivity, then unplug USB and keep both devices on the same Wi-Fi. Use Scan Devices; administrator rights are not needed. VPN or HomiPlay networking may affect discovery.' },
   'wifi.mac_scan': { zh: '掃描裝置', en: 'Scan devices' },
+  'wifi.mac_version_pending': { zh: '已配對・連線後確認 iOS 版本', en: 'Paired · iOS version after connection' },
   'wifi.repair_button': { zh: '重新配對', en: 'Re-pair' },
   'wifi.repair_tooltip': { zh: '用 USB 重建 RemotePairing 記錄,修復 WiFi Tunnel 無法啟動的問題', en: 'Rebuild the RemotePairing record via USB to fix WiFi Tunnel startup failures' },
   'wifi.repair_confirm_title': { zh: '重新配對 iPhone', en: 'Re-pair iPhone' },

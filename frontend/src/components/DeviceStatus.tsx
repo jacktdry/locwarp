@@ -456,7 +456,7 @@ const DeviceStatus: React.FC<DeviceStatusProps> = ({
                     <div style={{ opacity: 0.5, fontSize: 10, display: 'flex', alignItems: 'center', gap: 4 }}>
                       {unsupported
                         ? <span style={{ color: '#f44336' }}>{t('device.ios_unsupported_label', { version: d.iosVersion })}</span>
-                        : <>iOS {d.iosVersion}</>}
+                        : <>{d.iosVersion && d.iosVersion !== '0.0' ? `iOS ${d.iosVersion}` : t('wifi.mac_version_pending')}</>}
                       {d.connectionType && !unsupported && (
                         <span style={{
                           fontSize: 9,

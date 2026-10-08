@@ -7,6 +7,58 @@ from core.wifi_tunnel import TunnelRunner
 
 
 class PlatformTests(unittest.IsolatedAsyncioTestCase):
+    async def test_mac_scans_native_paired_wifi_without_usbmux(self):
+        records = [
+            {'udid': 'device-a', 'name': 'Alpha', 'networkAdvertActive': True,
+             'authState': {'rawCase': 'authenticated'}},
+            {'udid': 'device-b', 'name': 'Beta', 'networkAdvertActive': False,
+             'authState': {'rawCase': 'authenticated'}},
+            {'udid': 'unpaired', 'name': 'Unknown', 'networkAdvertActive': True,
+             'authState': {'rawCase': 'notAuthenticated'}},
+        ]
+        with patch('core.device_manager.sys.platform', 'darwin'), patch(
+            'core.device_manager.list_devices', new_callable=AsyncMock, return_value=[]
+        ), patch('pymobiledevice3.remote.native_tunnel.browse_native_devices', new_callable=AsyncMock,
+                 return_value=records), patch('core.device_manager._load_device_name_cache', return_value={}):
+            devices = await DeviceManager().discover_devices()
+            self.assertEqual([d.udid for d in devices], ['device-a', 'device-b'])
+            self.assertTrue(all(d.connection_type == 'Network' and not d.is_connected for d in devices))
+
+    async def test_mac_connect_native_record_without_usbmux(self):
+        records = [{'udid': 'device-a', 'name': 'Alpha', 'networkAdvertActive': True,
+                    'authState': {'rawCase': 'authenticated'}}]
+        tunnel = AsyncMock()
+        tunnel.__aenter__.return_value.product_version = '27.0.1'
+        tunnel.__aenter__.return_value.all_values = {'DeviceName': 'Alpha'}
+        tunnel.__aenter__.return_value.peer_info = {'Properties': {'OSVersion': '27.0.1'}}
+        with patch('core.device_manager.sys.platform', 'darwin'), patch(
+            'core.device_manager.list_devices', new_callable=AsyncMock, return_value=[]
+        ), patch('pymobiledevice3.remote.native_tunnel.browse_native_devices',
+                 new_callable=AsyncMock, return_value=records), patch(
+            'pymobiledevice3.remote.native_tunnel.NativeRemotedTunnel', return_value=tunnel
+        ) as native, patch('core.device_manager.create_using_usbmux', new_callable=AsyncMock) as lockdown, patch(
+            'core.device_manager._remember_device_name'
+        ):
+            dm = DeviceManager()
+            await dm.connect('device-a')
+            native.assert_called_once_with(serial='device-a')
+            lockdown.assert_not_called()
+            self.assertEqual(dm._connections['device-a'].ios_version, '27.0.1')
+            self.assertEqual(dm._connections['device-a'].connection_type, 'Network')
+            await dm.disconnect('device-a')
+            tunnel.__aexit__.assert_awaited_once()
+
+    async def test_mac_rejects_unpaired_native_record(self):
+        with patch('core.device_manager.sys.platform', 'darwin'), patch(
+            'core.device_manager.list_devices', new_callable=AsyncMock, return_value=[]
+        ), patch('pymobiledevice3.remote.native_tunnel.browse_native_devices',
+                 new_callable=AsyncMock, return_value=[]), patch(
+            'pymobiledevice3.remote.native_tunnel.NativeRemotedTunnel'
+        ) as native:
+            with self.assertRaisesRegex(RuntimeError, '找不到已配對'):
+                await DeviceManager().connect('unknown')
+            native.assert_not_called()
+
     async def test_mac_legacy_bonjour_discover_disabled(self):
         from api.device import wifi_tunnel_discover
         with patch('api.device.sys.platform', 'darwin'), patch(

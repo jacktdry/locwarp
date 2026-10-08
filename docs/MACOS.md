@@ -184,7 +184,16 @@ the installed dependency source is the implementation reference.
   `NativeRemotedTunnel(serial=udid)` via Apple's `remotepairingd`; it does
   not use the USB userspace PyTCP relay or the privileged kernel `utun`.
   Users may click **Scan devices** to reconnect an already-paired device;
-  there is no Windows-style RemotePairing record repair on macOS.
+  there is no Windows-style RemotePairing record repair on macOS. On some
+  macOS versions, USBmux returns an empty list even when Apple's own
+  remotepairingd can open a native RSD by serial; LocWarp also browses
+  the authenticated native pairing records and can connect those Network
+  candidates directly, without first creating a USBmux lockdown client.
+  Paired records can be stale (offline devices) and Apple's
+  `networkAdvertActive` may flip false when a phone sleeps; discovery
+  therefore lists authenticated pairing records even without advertising.
+  These are unverified candidates, not confirmed online phones, and the
+  iOS version may remain unknown until an actual connection succeeds.
   Wi-Fi scan visibility is not proof of a working DVT service; the actual
   RSD connection and device location functions must still pass real UAT.
 - The native tunnel shares Apple's single RSD link: Apple's `remoted` and
