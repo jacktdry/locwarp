@@ -705,13 +705,21 @@ async def lifespan(application: FastAPI):
 
 app = FastAPI(title="LocWarp", version="0.1.0", description="iOS Virtual Location Simulator", lifespan=lifespan)
 
+# Restrict browsers to Electron file:// (Origin: null) and local Vite.
+# LAN phones load /phone on the same origin and do not need cross-origin CORS.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=["null", "http://localhost:5173", "http://127.0.0.1:5173",
+                   "http://localhost:8777", "http://127.0.0.1:8777"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# The listening socket remains reachable from the LAN for the existing
+# mobile phone control feature. No other APIs or WebSockets are exposed.
+from core.network_guard import NetworkAccessGuard
+app.add_middleware(NetworkAccessGuard)
 
 # Register routers
 from api.device import router as device_router

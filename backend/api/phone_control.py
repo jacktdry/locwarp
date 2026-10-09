@@ -24,6 +24,7 @@ import logging
 import secrets
 import socket
 import time
+from collections import deque
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, Header
@@ -51,6 +52,42 @@ class _PhoneAuth:
 
 
 _auth = _PhoneAuth()
+
+
+class _PinAttemptLimiter:
+    """In-memory protection against brute-forcing a six-digit phone PIN."""
+    WINDOW_SECONDS = 60
+    PER_PEER_LIMIT = 5
+    GLOBAL_LIMIT = 30
+
+    def __init__(self):
+        self.attempts: dict[str, deque[float]] = {}
+        self.global_attempts: deque[float] = deque()
+
+    def reset(self):
+        self.attempts.clear()
+        self.global_attempts.clear()
+
+    def check_and_record(self, host: str, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        cutoff = now - self.WINDOW_SECONDS
+        while self.global_attempts and self.global_attempts[0] <= cutoff:
+            self.global_attempts.popleft()
+        # Expire peer entries so the dict cannot grow indefinitely.
+        for ip, history in list(self.attempts.items()):
+            while history and history[0] <= cutoff:
+                history.popleft()
+            if not history:
+                del self.attempts[ip]
+        peer = self.attempts.setdefault(host, deque())
+        if len(peer) >= self.PER_PEER_LIMIT or len(self.global_attempts) >= self.GLOBAL_LIMIT:
+            raise HTTPException(status_code=429, detail={"code": "phone_pin_rate_limited",
+                                                        "message": "Wait before trying another PIN"})
+        peer.append(now)
+        self.global_attempts.append(now)
+
+
+_pin_limiter = _PinAttemptLimiter()
 
 
 def _check_token(token: str | None) -> None:
@@ -409,14 +446,15 @@ async def phone_rotate(request: Request):
     if not _is_localhost(request):
         raise HTTPException(status_code=403, detail="Localhost only")
     _auth.rotate()
+    _pin_limiter.reset()
     logger.info("Phone-control auth rotated")
     return {"status": "ok"}
 
 
 @router.post("/api/phone/auth")
-async def phone_auth(req: _AuthRequest):
-    """PIN-only flow: phone POSTs the PIN it sees on the desktop screen
-    and gets the token back. PIN comparison is constant-time."""
+async def phone_auth(req: _AuthRequest, request: Request):
+    """PIN-only flow; rate-limited by peer and globally before comparison."""
+    _pin_limiter.check_and_record(request.client.host if request.client else "unknown")
     if not secrets.compare_digest(req.pin, _auth.pin):
         raise HTTPException(status_code=401, detail={"code": "bad_pin", "message": "Invalid PIN"})
     return {"token": _auth.token}

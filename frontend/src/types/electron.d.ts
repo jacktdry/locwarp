@@ -19,6 +19,7 @@ export interface RenderModeInfo {
 declare global {
   interface Window {
     electronAPI?: {
+      platform: string
       locatePc(): Promise<LocatePcResult>
       getRenderMode(): Promise<RenderModeInfo>
       setRenderMode(mode: RenderMode): Promise<{ ok: boolean }>

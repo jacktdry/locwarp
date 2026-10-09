@@ -271,3 +271,17 @@ The dependency upgrade does not itself verify remote/Wi-Fi GPS simulation.
 Run local unit/build checks and frozen-backend self-test, then verify a
 signed macOS app can launch and discover a previously paired iPhone,
 without modifying its GPS during unattended smoke tests.
+
+## macOS maintenance release and LAN API protections
+
+This fork is published at https://github.com/jacktdry/locwarp-macos;
+upstream Windows builds remain at https://github.com/keezxc1223/locwarp.
+Release tag `v0.2.200-macos.1` is the first ARM64 **pre-release**, not an
+Apple-trusted stable build. See [RELEASING.md](RELEASING.md) for branch,
+versioning, test and signing gates.
+
+Although the backend listens on `0.0.0.0:8777` to serve the optional
+LAN phone-control page, the Mac/Desktop API and WebSocket are loopback-only.
+Only explicit `/phone` and authenticated `/api/phone/*` routes are allowed
+from LAN peers; the phone PIN login has rate limiting. A full public remote
+control API has NOT been enabled. Do not expose port 8777 to the Internet.

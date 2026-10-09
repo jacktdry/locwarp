@@ -184,7 +184,7 @@ const SettingsPage: React.FC<Props> = ({ onOpenLogFolder, onEnableDeveloperMode 
         <button
           type="button"
           className="ios-row ios-row-tap"
-          onClick={() => window.open(update.releaseUrl || 'https://github.com/keezxc1223/locwarp/releases', '_blank', 'noopener')}
+          onClick={() => window.open(update.releaseUrl || (window.electronAPI?.platform === 'darwin' ? 'https://github.com/jacktdry/locwarp-macos/releases' : 'https://github.com/keezxc1223/locwarp/releases'), '_blank', 'noopener')}
         >
           <span className="ios-row-label">{t('settings.version')}</span>
           <span className="ios-row-value">

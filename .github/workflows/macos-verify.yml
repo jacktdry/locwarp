@@ -1,0 +1,57 @@
+name: macOS ARM64 verification (no publishing)
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: macOS ARM64 tests and reproducible build
+    runs-on: macos-15-arm64
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend --no-audit --no-fund
+      - name: Verify backend with Python 3.13
+        run: |
+          python3.13 -m pip install -r backend/requirements.txt 'pyinstaller>=6.19,<7'
+          (cd backend && python3.13 -m unittest discover -s tests -v)
+      - name: Verify Electron and frontend
+        run: |
+          npm test --prefix frontend
+          npm run build --prefix frontend
+      - name: Build and validate ad-hoc ARM64 installer (manual only)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          LOCWARP_MAC_SIGNING: local
+        run: |
+          bash build-macos.sh arm64
+          codesign --verify --deep --strict frontend/release/mac-arm64/LocWarp.app
+          hdiutil verify frontend/release/LocWarp-*-mac-arm64.dmg
+          unzip -tq frontend/release/LocWarp-*-mac-arm64.zip
+          (cd frontend/release && shasum -a 256 LocWarp-*-mac-arm64.dmg LocWarp-*-mac-arm64.zip > SHA256SUMS.txt)
+      - name: Upload unnotarized build for review (never auto-publish)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: locwarp-macos-ARM64-UNNOTARIZED
+          path: |
+            frontend/release/*-mac-arm64.dmg
+            frontend/release/*-mac-arm64.zip
+            frontend/release/SHA256SUMS.txt
+          retention-days: 7
