@@ -1,11 +1,10 @@
-pymobiledevice3>=11.2.0
-# macOS uses the no-root PreferredRsdTunnel API introduced in newer 11.x.
-pymobiledevice3>=11.26.0; sys_platform == 'darwin'
-fastapi>=0.141.1
-uvicorn[standard]>=0.52.4
-websockets>=16.0
+# pymobiledevice3 11.26+ includes macOS no-root native/USB RSD support.
+pymobiledevice3>=11.26.0
+fastapi>=0.143.0
+uvicorn[standard]>=0.54.0
+websockets>=17.2
 gpxpy>=1.6.0
 httpx>=0.27.0
-pydantic>=2.13.5
+pydantic>=2.14.0
 python-multipart>=0.0.32
 psutil>=6.0

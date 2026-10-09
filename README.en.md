@@ -2,9 +2,9 @@
 
 **A Windows tool that controls the GPS location of an iPhone or iPad.** No jailbreak. Works over USB or Wi-Fi, with Teleport, Navigate, Multi-point Route, Flower Farmer circling, Random Walk, and Joystick modes, and can drive up to three devices at once.
 
-This fork also includes a macOS USB/packaging port for Apple Silicon and Intel.
+This fork adds macOS USB, Apple-native Wi-Fi RSD, and App/DMG packaging.
 See [macOS setup, development, release steps and limitations](docs/MACOS.md).
-macOS Wi-Fi and real-device acceptance are not yet complete; desktop location uses coarse IP positioning.
+Apple Silicon Wi-Fi was validated with real devices, including simultaneous connections and teleport on two iPhones; Intel Mac remains unverified, and the Locate PC feature uses coarse IP positioning.
 
 <p align="right">
   <a href="README.md"><img alt="繁體中文" src="https://img.shields.io/badge/繁體中文-gray?style=flat-square"></a>
@@ -288,7 +288,7 @@ When reporting a problem, include the iOS version, the connection type, and `~/.
 | Frontend | [Leaflet](https://leafletjs.com/) 1.9 | Interactive map, custom markers, animated route lines |
 | Frontend | [MapLibre GL](https://maplibre.org/) 6 | Vector layer rendering, attached to Leaflet through maplibre-gl-leaflet |
 | Backend | Python 3.13 + [FastAPI](https://fastapi.tiangolo.com/) + [uvicorn](https://www.uvicorn.org/) | REST API and WebSocket (`:8777`) |
-| Backend | [pymobiledevice3](https://github.com/doronz88/pymobiledevice3) 11.2+ | iOS device protocols (DVT / RemoteServices / lockdown / LegacyLocationService) and the Wi-Fi tunnel |
+| Backend | [pymobiledevice3](https://github.com/doronz88/pymobiledevice3) 11.26+ | iOS device protocols (DVT / RemoteServices / lockdown / LegacyLocationService) and the Wi-Fi tunnel |
 | Backend | [httpx](https://www.python-httpx.org/), [pydantic](https://docs.pydantic.dev/), [gpxpy](https://github.com/tkrajina/gpxpy) | External service calls, validation, GPX parsing |
 | Packaging | [PyInstaller](https://pyinstaller.org/), [electron-builder](https://www.electron.build/) (NSIS) | Backend exe and the Windows installer |
 

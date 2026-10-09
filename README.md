@@ -1,7 +1,7 @@
 # LocWarp
 
-此 fork 加入 Apple Silicon／Intel 的 macOS USB 與封裝支援。詳見
-[macOS 設定、開發、發行步驟與限制](docs/MACOS.md)。macOS Wi-Fi 與手機實機驗收尚未完成；電腦定位採 IP 粗略定位。
+此 fork 加入 macOS USB、Apple 原生 Wi-Fi RSD 與 App／DMG 封裝支援。詳見
+[macOS 設定、開發、發行步驟與限制](docs/MACOS.md)。Apple Silicon 已完成 Wi-Fi 真機驗證，包含兩支 iPhone 同時連線及瞬移；Intel Mac 尚待實機測試，電腦定位採 IP 粗略定位。
 
 **在 Windows 上控制 iPhone / iPad GPS 定位的虛擬定位工具。** 免越獄,透過 USB 或 WiFi 連線,支援瞬移、導航、多點路徑、花農繞圈、隨機漫步與搖桿操作,最多可同時控制三台裝置。
 
@@ -287,7 +287,7 @@ iOS 17 以上需要 iPhone 上掛有 Personalized DDI 才能模擬定位。LocWa
 | Frontend | [Leaflet](https://leafletjs.com/) 1.9 | 互動地圖、自訂標記、動畫路徑線 |
 | Frontend | [MapLibre GL](https://maplibre.org/) 6 | 向量圖層渲染,經 maplibre-gl-leaflet 掛進 Leaflet |
 | Backend | Python 3.13 + [FastAPI](https://fastapi.tiangolo.com/) + [uvicorn](https://www.uvicorn.org/) | REST API 與 WebSocket(`:8777`) |
-| Backend | [pymobiledevice3](https://github.com/doronz88/pymobiledevice3) 11.2+ | iOS 裝置協議(DVT / RemoteServices / lockdown / LegacyLocationService)與 WiFi tunnel |
+| Backend | [pymobiledevice3](https://github.com/doronz88/pymobiledevice3) 11.26+ | iOS 裝置協議(DVT / RemoteServices / lockdown / LegacyLocationService)與 WiFi tunnel |
 | Backend | [httpx](https://www.python-httpx.org/)、[pydantic](https://docs.pydantic.dev/)、[gpxpy](https://github.com/tkrajina/gpxpy) | 外部服務呼叫、資料驗證、GPX 解析 |
 | 打包 | [PyInstaller](https://pyinstaller.org/)、[electron-builder](https://www.electron.build/)(NSIS) | backend exe 與 Windows 安裝檔 |
 

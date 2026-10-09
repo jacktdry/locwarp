@@ -220,9 +220,11 @@ the installed dependency source is the implementation reference.
   CoreLocation/GPS helper, so no location permission is requested or
   advertised. Results are labeled as IP; manual map selection works offline.
 - pymobiledevice3's **USB** userspace transport has a process-wide
-  singleton: one userspace iOS 17+ tunnel at a time. Multi-device mixes
-  including native Wi-Fi remain unverified. Native remoted can conflict
-  with concurrent Xcode/device tools as noted above.
+  singleton: one userspace iOS 17+ tunnel at a time. On 2026-10-09 the
+  owner confirmed **two iPhones connected via native Wi-Fi simultaneously
+  and both teleported successfully** on Apple Silicon. USB/native mixes,
+  three-device combinations and Intel Mac remain unverified. Native remoted
+  can conflict with concurrent Xcode/device tools as noted above.
 - iOS 16 legacy transport is retained; all iPhone operations and Intel
   binaries still require real-device/host acceptance. Merely building or
   importing a bundle does not prove GPS simulation works.
@@ -246,3 +248,19 @@ from `/api/device/list`, verify a responsive API for at least several
 minutes, then perform an explicit GPS teleport and restore only with the
 owner present. USB-to-Wi-Fi hot handoff after removing the cable while a
 userspace USB tunnel is active is a separate unverified stress case.
+
+## Upstream synchronization — v0.2.200 (2026-10-09)
+
+Merged upstream `main` (through `bac5bbb`, tag `v0.2.200`) into
+`feature/macos-support` without replacing macOS-specific native Wi-Fi RSD,
+USB/no-root handling, native pairing fallback, ad-hoc packaging, and
+local-network permission declarations. Upstream changes are dependency
+updates: pymobiledevice3 >=11.26, FastAPI >=0.143, Uvicorn >=0.54,
+websockets >=17.2, Pydantic >=2.14; Electron 44.7 and MapLibre GL 6.13
+are resolved by the new npm lockfile. Use a matching version field in
+both `frontend/package.json` and `frontend/package-lock.json`.
+
+The dependency upgrade does not itself verify remote/Wi-Fi GPS simulation.
+Run local unit/build checks and frozen-backend self-test, then verify a
+signed macOS app can launch and discover a previously paired iPhone,
+without modifying its GPS during unattended smoke tests.
