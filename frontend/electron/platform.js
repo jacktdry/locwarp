@@ -36,6 +36,10 @@ function applicationMenu(platform) {
   if (platform !== 'darwin') return null
   return [
     { role: 'appMenu' },
+    // macOS normally uses File > Close Window (Cmd+W). Electron's
+    // built-in close role targets the focused BrowserWindow; it does not
+    // quit the App, so backend ownership remains with the App lifecycle.
+    { label: 'File', submenu: [{ role: 'close', label: 'Close Window', accelerator: 'Command+W' }] },
     { role: 'editMenu' },
     { role: 'viewMenu' },
     { role: 'windowMenu' },

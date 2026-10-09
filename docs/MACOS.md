@@ -232,6 +232,13 @@ the installed dependency source is the implementation reference.
   trusted LAN and firewall; do not expose this unauthenticated API to the
   internet. This port does not redesign that network contract.
 
+## macOS window shortcuts
+
+On macOS **File → Close Window** uses **⌘W**. This closes the focused
+LocWarp window without quitting the app or stopping the location backend;
+clicking the LocWarp Dock icon reopens the window. **⌘Q** quits the app and
+stops its owned backend. Windows app/menu behavior is unchanged.
+
 ## Safe acceptance checks
 
 Run the focused JS/Python tests and source/frozen `--self-test` first;

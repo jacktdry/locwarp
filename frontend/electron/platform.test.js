@@ -36,6 +36,17 @@ test('macOS missing backend has actionable bilingual instructions', () => {
   }
 })
 
+test('macOS File menu maps Command+W to native close-window, not App Quit', () => {
+  const menu = applicationMenu('darwin')
+  const file = menu.find(item => item.label === 'File')
+  assert.ok(file, 'macOS needs a native File menu for Cmd+W')
+  const close = file.submenu.find(item => item.role === 'close')
+  assert.equal(close.accelerator, 'Command+W')
+  assert.equal(close.label, 'Close Window')
+  assert.equal(file.submenu.some(item => item.role === 'quit'), false)
+  assert.equal(applicationMenu('win32'), null, 'do not change Windows menus')
+})
+
 test('macOS packages use per-architecture native bundles; Windows config is retained', () => {
   assert.equal(config.win.extraResources[0].from, '../dist-py/locwarp-backend')
   assert.equal(config.win.requestedExecutionLevel, 'requireAdministrator')
