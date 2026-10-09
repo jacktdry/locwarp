@@ -227,6 +227,7 @@ export const insertWaypoint = (after_index: number, lat: number, lng: number, ud
     'POST', '/api/location/insert_waypoint', { after_index, lat, lng, ...ud(udid) },
   )
 export const getStatus = (udid?: string) => request<any>('GET', `/api/location/status${qs(udid)}`)
+export const getSimulationSnapshot = () => request<any>('GET', '/api/location/snapshot')
 
 // Cooldown
 export const getCooldownStatus = () => request<any>('GET', '/api/location/cooldown/status')

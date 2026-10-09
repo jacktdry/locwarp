@@ -197,6 +197,11 @@ class SimulationStatus(BaseModel):
     total_segments: int = 0
     cooldown_remaining: float = 0.0
     is_paused: bool = False
+    # Read-only window rehydration: don't lose the route when macOS Cmd+W
+    # closes the renderer while the backend simulation continues.
+    route_path: list[Coordinate] = Field(default_factory=list)
+    waypoints: list[Coordinate] = Field(default_factory=list)
+    simulation_kind: str | None = None
 
 
 # ── Route ─────────────────────────────────────────────────
