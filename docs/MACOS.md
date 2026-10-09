@@ -285,3 +285,18 @@ LAN phone-control page, the Mac/Desktop API and WebSocket are loopback-only.
 Only explicit `/phone` and authenticated `/api/phone/*` routes are allowed
 from LAN peers; the phone PIN login has rate limiting. A full public remote
 control API has NOT been enabled. Do not expose port 8777 to the Internet.
+
+## Route state recovery after macOS ⌘W
+
+The macOS App intentionally keeps the backend simulation running when its
+window is closed. On reopening from the Dock and whenever the WebSocket
+reconnects, the renderer performs a read-only `GET /api/location/snapshot`.
+The response contains the primary device, all connected devices' positions,
+currently active route polylines and waypoints, progress and pause state.
+Live WebSocket updates then continue from the existing backend; the snapshot
+**does not** start, stop, teleport or replan an iPhone route. The HTTP
+endpoint is restricted to the local Mac by the existing LAN access guard.
+
+This fixes the renderer lifetime only; restarting the backend itself does
+not preserve an in-progress simulation. New installed-App testing is deferred
+until the user's ongoing route has completed to avoid interrupting GPS.

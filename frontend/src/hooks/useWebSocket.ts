@@ -24,6 +24,7 @@ const MAX_RECONNECT_INTERVAL = 30000
  */
 export function useWebSocket() {
   const [connected, setConnected] = useState(false)
+  const [connectionEpoch, setConnectionEpoch] = useState(0)
   const wsRef = useRef<WebSocket | null>(null)
   const subscribersRef = useRef<Set<(m: WsMessage) => void>>(new Set())
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -51,6 +52,9 @@ export function useWebSocket() {
           return
         }
         setConnected(true)
+        // New socket = possible missed route/state events. Consumers read a
+        // read-only backend snapshot before continuing normal WS updates.
+        setConnectionEpoch((n) => n + 1)
         reconnectDelay.current = RECONNECT_INTERVAL
       }
 
@@ -124,5 +128,5 @@ export function useWebSocket() {
     }
   }, [connect, cleanup])
 
-  return { connected, subscribe, sendMessage }
+  return { connected, connectionEpoch, subscribe, sendMessage }
 }

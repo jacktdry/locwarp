@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import * as api from '../services/api'
 import type { WsMessage } from './useWebSocket'
 import { playCompletionAlert } from '../services/alertSound'
+import { normalizeDeviceSnapshot, selectSnapshotDevice, type BackendSnapshot } from './simulationSnapshot'
 
 export enum SimMode {
   Teleport = 'teleport',
@@ -109,7 +110,7 @@ export function summarizeResults<T>(
   return { ok, failed }
 }
 
-export function useSimulation(subscribe?: WsSubscribe, primaryUdid?: string | null) {
+export function useSimulation(subscribe?: WsSubscribe, primaryUdid?: string | null, connectionEpoch = 0) {
   // In dual-device mode every position_update carries a udid. Without a
   // filter, the legacy single-device setters below run for BOTH devices
   // and the global currentPosition ping-pongs between each device's
@@ -398,6 +399,10 @@ export function useSimulation(subscribe?: WsSubscribe, primaryUdid?: string | nu
 
   // Per-device runtime map (group mode). Populated from WS events tagged with udid.
   const [runtimes, setRuntimes] = useState<RuntimesMap>({})
+  // Invalidate an in-flight HTTP rehydration when a newer WS event changes
+  // the simulation. Position ticks alone do not invalidate the route shape.
+  const routeRevision = useRef(0)
+  const positionRevision = useRef(0)
   const updateRuntime = useCallback((udid: string, patch: Partial<DeviceRuntime>) => {
     setRuntimes((prev) => {
       const cur = prev[udid] ?? emptyRuntime(udid)
@@ -427,6 +432,12 @@ export function useSimulation(subscribe?: WsSubscribe, primaryUdid?: string | nu
   useEffect(() => {
     if (!subscribe) return
     return subscribe((wsMessage) => {
+    if (['route_path', 'state_change', 'simulation_complete', 'navigation_complete',
+         'multi_stop_complete', 'loop_complete', 'flower_complete',
+         'device_disconnected', 'device_connected', 'device_reconnected'].includes(wsMessage.type)) {
+      routeRevision.current += 1
+    }
+    if (wsMessage.type === 'position_update') positionRevision.current += 1
     // ── Group mode: mirror per-device state into `runtimes` map ────────
     const udid: string | undefined = wsMessage.data?.udid
     if (udid) {
@@ -982,27 +993,73 @@ export function useSimulation(subscribe?: WsSubscribe, primaryUdid?: string | nu
     }
   }, [moveMode, customSpeedKmh, speedMinKmh, speedMaxKmh])
 
-  // Fetch initial status on mount
-  const initialFetched = useRef(false)
+  // Rehydrate from the backend when a window is reopened, the primary device
+  // changes or the WebSocket re-connects. The single HTTP snapshot contains
+  // all connected engines; it performs no DVT, route planning or GPS writes.
   useEffect(() => {
-    if (initialFetched.current) return
-    initialFetched.current = true
-    api.getStatus().then((res) => {
-      if (res.position) {
-        setCurrentPosition({ lat: res.position.lat, lng: res.position.lng })
+    if (connectionEpoch === 0) return // Wait for a healthy backend socket.
+    let cancelled = false
+    const observedRevision = routeRevision.current
+    const observedPositionRevision = positionRevision.current
+    api.getSimulationSnapshot().then((snapshot: BackendSnapshot) => {
+      // A fresh WS route/stop event supersedes this (possibly stale) GET.
+      if (cancelled || routeRevision.current !== observedRevision) return
+      const records = snapshot?.devices || {}
+      const chosen = selectSnapshotDevice(snapshot, primaryUdid)
+      const normalized = Object.entries(records).map(([udid, raw]) =>
+        [udid, normalizeDeviceSnapshot(raw)] as const)
+      setRuntimes((prev) => {
+        // The response is authoritative; remove devices disconnected while
+        // the WebSocket was offline rather than leaving ghost route overlays.
+        const next: RuntimesMap = {}
+        for (const [udid, state] of normalized) {
+          next[udid] = {
+            ...(next[udid] ?? emptyRuntime(udid)), state: state.state,
+            currentPos: state.currentPos, routePath: state.routePath,
+            progress: state.progress, eta: state.eta,
+            distanceRemaining: state.distanceRemaining,
+            distanceTraveled: state.distanceTraveled,
+            currentSpeedKmh: state.speed * 3.6,
+          }
+        }
+        return next
+      })
+      if (!chosen) return
+      const state = normalizeDeviceSnapshot(records[chosen])
+      // Do not rewind the map marker behind a newer WebSocket position tick.
+      if (state.currentPos && observedPositionRevision === positionRevision.current) {
+        setCurrentPosition(state.currentPos)
       }
-      if (res.mode) _setMode(res.mode)
-      if (res.running != null || res.paused != null) {
-        setStatus({
-          running: !!res.running,
-          paused: !!res.paused,
-          speed: res.speed ?? 0,
-        })
+      if (!state.active) {
+        // Never discard an idle user's unsaved route draft on window open.
+        // If a completed route was missed while disconnected, clear only
+        // the old running overlay and status.
+        setStatus((prev) => ({ ...prev, running: false, paused: false, state: state.state }))
+        setRoutePath([])
+        setEta(null)
+        return
       }
-    }).catch(() => {
-      // backend may not be running yet
-    })
-  }, [])
+      const kindToMode: Partial<Record<string, SimMode>> = {
+        navigate: SimMode.Navigate,
+        start_loop: SimMode.Loop,
+        multi_stop: SimMode.Loop,
+        flower: SimMode.Flower,
+        random_walk: SimMode.RandomWalk,
+        joystick: SimMode.Joystick,
+      }
+      if (state.mode && kindToMode[state.mode]) _setMode(kindToMode[state.mode]!)
+      setRoutePath(state.routePath)
+      setWaypoints(state.waypoints)
+      setProgress(state.progress)
+      setEta(state.eta)
+      setStatus({
+        running: true, paused: state.paused, speed: state.speed,
+        state: state.state, distance_remaining: state.distanceRemaining,
+        distance_traveled: state.distanceTraveled,
+      })
+    }).catch(() => { /* WebSocket stream remains authoritative on failure */ })
+    return () => { cancelled = true }
+  }, [primaryUdid, connectionEpoch])
 
   // ── Group-mode fan-out helpers ──────────────────────────────────────
   // Each takes an explicit list of udids so the caller (App.tsx) decides

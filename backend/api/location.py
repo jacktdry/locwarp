@@ -579,6 +579,25 @@ async def debug_info():
     }
 
 
+@router.get("/snapshot")
+async def get_snapshot():
+    """Return the in-memory routes of all phones without touching devices.
+
+    Unlike the legacy /status endpoint this deliberately does NOT call
+    _engine(), which can initiate pairing, discovery or DVT reconnection.
+    A renderer recreated after Cmd+W (or WebSocket reconnect) uses this
+    one read-only snapshot before resuming the live WebSocket stream.
+    """
+    from main import app_state
+    return {
+        "primary_udid": app_state._primary_udid,
+        "devices": {
+            udid: engine.get_status().model_dump(mode="json")
+            for udid, engine in list(app_state.simulation_engines.items())
+        },
+    }
+
+
 @router.get("/status", response_model=SimulationStatus)
 async def get_status(udid: str | None = None):
     engine = await _engine(udid)

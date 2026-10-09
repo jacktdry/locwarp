@@ -710,8 +710,23 @@ class SimulationEngine:
             logger.exception("resume_from_snapshot: %s raised", kind)
 
     def get_status(self) -> SimulationStatus:
-        """Build a snapshot of the current simulation status."""
+        """Read-only simulation snapshot, including the active route overlay.
+
+        Unlike ephemeral WebSocket route_path events, this survives a macOS
+        window close/reopen while the backend route continues. No new route
+        plan or simulated GPS write happens when callers read this status.
+        """
+        active = self.state not in (SimulationState.IDLE, SimulationState.DISCONNECTED)
+        args = self._last_sim_args or {}
+        waypoints = args.get("waypoints") if active else None
+        # Return snapshots (not references to mutable handler-owned lists).
+        path = list(self._last_route_path or []) if active else []
+        kind = ('joystick' if self.state == SimulationState.JOYSTICK
+                else self._last_sim_kind if active else None)
         return SimulationStatus(
+            route_path=path,
+            waypoints=list(waypoints or []),
+            simulation_kind=kind,
             state=self.state,
             current_position=self.current_position,
             progress=self.eta_tracker.progress,
