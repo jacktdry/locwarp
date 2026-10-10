@@ -1,7 +1,7 @@
 # macOS 多裝置與 native Wi-Fi 恢復 UAT（實機紀錄與待辦）
 
 本文件是 `feature/macos-connection-resilience` 的人工驗收計畫，連線改善基線為
-`61e4450`。2026-10-10 已完成隔離 ARM64 建置、後端 82、Electron 24 項測試、
+`61e4450`。2026-10-10 初始階段已完成隔離 ARM64 建置、後端 82、Electron 24 項測試、
 前端 build、封裝後端 self-test 與 ad-hoc 嚴格簽章驗證，
 實機通過範圍與剩餘未執行項目以本文件下方逐項紀錄為準，
 不可將部分成功解釋為所有裝置、手機鎖定／解鎖與 GPS 恢復均已驗收。
@@ -18,8 +18,51 @@ LocWarp 預期在 macOS 保持運作的情況下執行定位模擬，不以「Ma
 已經通過測試。iPhone 螢幕鎖定／解鎖的驗收則另行保留。
 此項改動的 Electron lifecycle mock 測試涵蓋啟動取得保護、`Cmd+W`
 保持保護、Dock 重開不重複、`Cmd+Q` 釋放，以及第二實例不取得保護；
-**目前 Electron 測試 25/25 通過**。實際 Electron App 仍需以 macOS
-電源管理狀態確認系統 assertion 生效與退出後釋放，尚不可標成實機 PASS。
+**目前 Electron 測試 25/25 通過**；實際 App 電源管理整合驗收詳見下段。
+
+## 2026-10-10 實機 GUI／防閒置睡眠驗收（PASS，附操作限制）
+
+在 macOS Apple Silicon 上使用本分支的 `602c4d1` 原始碼重新執行
+`LOCWARP_MAC_OUTPUT_SUBDIR=uat-602c4d1 LOCWARP_MAC_DIR_ONLY=1
+bash build-macos.sh arm64`，包含新 PyInstaller 後端、前端 build、
+Electron **25/25** 與後端 **90/90** 測試、frozen backend `--self-test`、
+ARM64 Electron 封裝與 ad-hoc `codesign --verify --deep --strict`。
+測試 App 位於 `frontend/release/uat-602c4d1/mac-arm64/LocWarp.app`，
+未取代 `/Applications/LocWarp.app`，未推送／發佈。
+
+驗收前確認沒有其它 LocWarp 程序、8777 listener 或自動連線核准，
+備份 `~/.locwarp/settings.json`；用 `open -g -a <驗收 App>` 在**背景**
+啟動，CDP 僅監聽 `127.0.0.1:19229`，沒有搶佔使用者輸入。
+啟動後 Electron 主程序 PID **78576**、受其管理的 backend PID **78813**；
+8777 正常監聽，CDP 取得真實 GUI renderer，DOM 包含導航、連線、
+Leaflet 地圖等控制項，B（zih）顯示已連線且 API 實際為 USB。
+backend engine 為 Idle、沒有模擬 GPS。
+
+macOS `pmset -g assertions` 在驗收 App 執行後，明確顯示
+`pid 78576(LocWarp)` 持有 **`NoIdleSleepAssertion named: "Electron"`**，
+其 assertion ID 在以下步驟均保持相同。
+
+- 透過 CDP `Runtime.evaluate(window.close())` 關閉實際 Electron 視窗，
+  再次讀取 CDP **0 個 page target**，但 **主程序 78576／後端 78813 不變**，
+  且同一筆 `NoIdleSleepAssertion` 持續有效。
+- 透過 `open -g -a <驗收 App>` 發出背景重新開窗請求，CDP 回到
+  **1 個已載入的 LocWarp page target**；同一個主程序、後端及
+  assertion ID 皆保留，無重複後端。重新開窗後，B 仍顯示已連線，
+  API 為 USB、engine 仍 Idle／無模擬座標。
+- 透過 macOS `NSRunningApplication(processIdentifier:78576).terminate()`
+  正常要求 App 結束，回報成功；驗證兩個 PID 都消失、8777 與
+  19229 均釋放、`pmset` 不再有 LocWarp 的 `NoIdleSleepAssertion`。
+  `~/.locwarp/settings.json` 與驗收前備份的 SHA-256 完全一致，
+  Auto-connect 核准清單仍為空。
+
+**結論：實際 GUI renderer／關窗持續背景執行／背景重新開窗與
+macOS 防閒置睡眠 assertion 的取得、保留和釋放均 PASS。**
+上述關窗是程式化的 window close event、重新開窗是 macOS 背景
+open request、退出是系統的 App 結束要求；**沒有真的按 `Cmd+W`、
+`Cmd+Q` 或點 Dock 圖示**，這些輸入路徑仍由 mock 的
+Electron lifecycle／menu 測試涵蓋，不能冒稱已完成真人鍵盤／Dock UAT。
+本次沒有讓 Mac 休眠，也沒有從 GUI 發送 GPS 模擬；不推論實體定位
+路線進行中的 GUI 狀態。App 已正常退出，沒有驗收程序遺留。
 
 ## 2026-10-10 實機紀錄：Wi-Fi 純連線（部分通過）
 

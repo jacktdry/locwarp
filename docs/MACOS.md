@@ -97,10 +97,13 @@ running in the background will therefore still inhibit idle sleep; Quit the
 app when finished to restore the normal idle-sleep policy.
 
 Full Mac system sleep / wake route restoration is outside this version's
-supported use case. The Electron lifecycle tests verify blocker acquisition,
-non-duplication during Dock activation, and release on Quit; actual GUI/power
-assertion integration remains a separate check and does not require putting
-the user's Mac to sleep.
+supported use case. In addition to Electron lifecycle tests, the 2026-10-10
+isolated ARM64 packaged-app UAT verified macOS `pmset` reports LocWarp's
+`NoIdleSleepAssertion` while its GUI is open, retains the same assertion when
+its window closes and reopens, then releases the assertion on a normal macOS
+app termination request. No real Mac sleep was forced. The window close/reopen
+was driven in the background (CDP window.close and open -g), not literal
+Command+W and a physical Dock click; see `MACOS_MULTI_DEVICE_UAT.md`.
 
 Reference: [Electron `powerSaveBlocker`](https://www.electronjs.org/docs/latest/api/power-save-blocker/).
 
