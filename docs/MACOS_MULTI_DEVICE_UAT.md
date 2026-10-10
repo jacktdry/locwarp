@@ -154,8 +154,41 @@ USB 握手或引擎重建失敗則保留原 Network，不發假的成功通知�
 不宣稱已支援「動態路線中自動 Wi-Fi → USB 無縫熱切換」。
 全模擬回歸測試新增 `backend/tests/test_usb_upgrade.py`，包含成功切換、
 USB/DVT 失敗保留 Wi-Fi、主從隔離、抑制／核准及活動定位守衛，
-此段目前僅為**程式／mock 驗證**，必須重新啟動新版後端並請使用者插入
-實體 USB 資料線，確認 `DeviceManager` 的**實際**連線類型與 DVT 後才能標 PASS。
+上述程式修正先完成 **mock 回歸驗證**；後續使用新版測試後端及實體
+USB 資料線確認 `DeviceManager` 的**實際**連線類型與 DVT，結果見下段。
+
+**B Wi-Fi → USB 反向切換實機驗收（2026-10-10，Idle，PASS）：**
+先前一次準備（約 13:16）因使用者插線前測試窗口到期，由安全清理程序
+正確停用 Auto-connect 並關閉後端；舊監測期間沒有 USB 插入事件，
+**不得算作通過**。重新準備後確認 B 已拔除 USB，A 與 B 的 macOS
+native Wi-Fi 配對均經過認證且可用。使用包含 `aef4225` 守護式
+USB 升級修正的獨立 Python 測試後端（**非**上一版封裝二進位）
+分別連接 A、B，兩者都是 `connection_type=Network`、已連線，兩個
+engine 均為 `idle`、無模擬位置；備份原有使用者設定，只核准 B 自動連線。
+在使用者確認 **實際插入 B USB-C** 之前，唯讀監測已啟動。
+
+新監測捕捉到 B 實體 USB 由未出現轉為出現（觀測器時間起算約 41.7 秒），
+B 的連線由 `Network` 真正改為 **`USB`、`is_connected=true`**，
+而 A 持續為 `Network`、`is_connected=true`。兩個引擎全程維持
+`idle`、`current_position=None`。監測記錄至少 **15 筆**成功升級後的
+取樣、約 **65.6 秒**，無 API 讀取錯誤。測試後端的獨立 stderr 紀錄
+進一步顯示 B 經 USB 握手成功、personalized DDI 已掛載，重新建立
+simulation engine，並釋放 B 舊的 Wi-Fi handle；有
+`Upgraded idle native Wi-Fi device ... to verified USB` 成功紀錄。
+原 observer 的 `upgraded_log` 為 false，因它只掃描
+`~/.locwarp/logs/backend.log` 的新增內容，並未讀到此次測試後端的
+stderr 訊息；**以 stderr 的交接證據與 API 實際傳輸狀態為準**，
+不可把該欄位誤解為未發生通道升級。原始觀測檔只存於測試 Mac：
+`/tmp/locwarp-reverse-usb-uat-20261010-phase2.jsonl`（不提交 UDID）。
+
+測試結束前再次核對 A Network、B USB、兩個 engine Idle／無模擬座標；
+停用 B Auto-connect 並確認核准清單為空，SIGTERM 正常結束
+**已核實身分**的測試後端、8777 釋放、唯讀監測程序關閉。
+`~/.locwarp/settings.json` 與本輪事前備份的 SHA-256 **完全一致**，
+逾時清理旗標已解除；正式安裝版未受影響。本案例驗收結果為
+**Idle 狀態的真實 Wi-Fi → USB 反向切換 PASS**。
+它不包含活動 GPS／導航時強制切換、手機休眠喚醒與正式 GUI 操作，
+這些項目仍須各自驗證。
 
 ## Read-only 前置與授權界線
 
