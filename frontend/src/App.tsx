@@ -86,7 +86,7 @@ const NumberField: React.FC<{
 const App: React.FC = () => {
   const t = useT()
   const ws = useWebSocket()
-  const device = useDevice(ws.subscribe)
+  const device = useDevice(ws.subscribe, ws.connectionEpoch)
   // Pass primary-device udid into useSimulation so its legacy single-device
   // setters only react to the primary's WS events in dual-device mode,
   // stopping the map marker from ping-ponging between both devices'
@@ -1589,6 +1589,7 @@ const App: React.FC = () => {
             name: d.name,
             iosVersion: d.ios_version,
             connectionType: d.connection_type,
+            isConnected: d.is_connected,
             developerModeEnabled: d.developer_mode_enabled,
           }))}
           isConnected={device.connectedDevice !== null}
@@ -1600,6 +1601,10 @@ const App: React.FC = () => {
           tunnels={device.tunnels}
           pinnedUdids={device.pinnedUdids}
           onTogglePin={device.togglePin}
+          autoConnectUdids={device.autoConnectUdids}
+          onToggleAutoConnect={device.toggleAutoConnect}
+          autoConnectBusy={device.autoConnectBusy}
+          autoConnectError={device.autoConnectError}
         />
         </div>
         <div style={{ display: activePage === 'nav' ? 'block' : 'none' }}>

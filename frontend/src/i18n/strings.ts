@@ -257,6 +257,8 @@ export const STRINGS = {
   'wifi.warning_ok': { zh: '我已了解', en: 'Got it' },
   'wifi.mac_title': { zh: 'macOS Wi-Fi 連線', en: 'macOS Wi-Fi connection' },
   'wifi.mac_help': { zh: '請先以 USB 在 Finder 完成配對並啟用 Wi-Fi 連線，再拔除傳輸線，保持 iPhone 與 Mac 在同一個 Wi-Fi。按「掃描裝置」即可連接，不需管理員權限。VPN、HomiPlay 等網路軟體可能影響裝置探索。', en: 'Pair the iPhone by USB in Finder and enable Wi-Fi connectivity, then unplug USB and keep both devices on the same Wi-Fi. Use Scan Devices; administrator rights are not needed. VPN or HomiPlay networking may affect discovery.' },
+  'wifi.mac_auto_connect': { zh: '自動連線', en: 'Auto-connect' },
+  'wifi.mac_auto_connect_help': { zh: 'USB 或 Wi-Fi 裝置皆可啟用（最多 3 台）。拔除 USB 後使用 Wi-Fi，須先在 Finder 配對並啟用 Wi-Fi 顯示。只會自動連接你啟用的裝置。設定儲存在這台 Mac，關閉視窗仍會重試。手動斷線後，本次啟動不會自動重連，直到你再次手動連線。', en: 'Enable USB or Wi-Fi devices (up to 3). For Wi-Fi after unplugging USB, first pair in Finder and enable Show this iPhone when on Wi-Fi. Only enabled devices will auto-connect. Preferences are saved on this Mac; retries continue with the window closed. Manual disconnect suppresses reconnection this session until you connect explicitly.' },
   'wifi.mac_scan': { zh: '掃描裝置', en: 'Scan devices' },
   'wifi.mac_version_pending': { zh: '已配對・連線後確認 iOS 版本', en: 'Paired · iOS version after connection' },
   'wifi.repair_button': { zh: '重新配對', en: 'Re-pair' },

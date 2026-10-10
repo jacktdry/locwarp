@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import {
-  listDevices, connectDevice, disconnectDevice,
+  listDevices, connectDevice, disconnectDevice, getAutoConnectSettings, setDeviceAutoConnect,
   wifiConnect, wifiScan,
   wifiTunnelStartAndConnect, wifiTunnelStatus, wifiTunnelStop,
   type TunnelInfo,
@@ -31,7 +31,48 @@ export interface WifiScanResult {
 
 export type WsSubscribe = (fn: (m: WsMessage) => void) => () => void
 
-export function useDevice(subscribe?: WsSubscribe) {
+export function useDevice(subscribe?: WsSubscribe, connectionEpoch = 0) {
+  const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || navigator.userAgent)
+  const [autoConnectUdids, setAutoConnectUdids] = useState<string[]>([])
+  const [autoConnectReady, setAutoConnectReady] = useState(false)
+  const [autoConnectBusy, setAutoConnectBusy] = useState(false)
+  const [autoConnectError, setAutoConnectError] = useState<string | null>(null)
+  const autoConnectWrite = useRef(false)
+  const refreshAutoConnect = useCallback(async () => {
+    if (!isMac) return
+    try {
+      const settings = await getAutoConnectSettings()
+      setAutoConnectUdids(settings.approved_udids)
+      setAutoConnectReady(true)
+      setAutoConnectError(null)
+    } catch (err: any) {
+      setAutoConnectError(err.message || 'Unable to load auto-connect settings')
+    }
+  }, [isMac])
+  useEffect(() => {
+    if (!isMac) return
+    refreshAutoConnect()
+    window.addEventListener('focus', refreshAutoConnect)
+    const unsubscribe = subscribe?.((msg) => {
+      if (msg.type === 'auto_connect_settings') refreshAutoConnect()
+    })
+    return () => { window.removeEventListener('focus', refreshAutoConnect); unsubscribe?.() }
+  }, [isMac, subscribe, refreshAutoConnect, connectionEpoch])
+  const toggleAutoConnect = useCallback(async (udid: string) => {
+    if (!isMac || !autoConnectReady || autoConnectWrite.current) return
+    autoConnectWrite.current = true
+    setAutoConnectBusy(true)
+    try {
+      const result = await setDeviceAutoConnect(udid, !autoConnectUdids.includes(udid.toLowerCase()))
+      setAutoConnectUdids(result.approved_udids)
+      setAutoConnectError(null)
+    } catch (err: any) {
+      setAutoConnectError(err.message || 'Unable to save auto-connect settings')
+    } finally {
+      autoConnectWrite.current = false
+      setAutoConnectBusy(false)
+    }
+  }, [isMac, autoConnectReady, autoConnectUdids])
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [connectedDevice, setConnectedDevice] = useState<DeviceInfo | null>(null)
 
@@ -109,8 +150,8 @@ export function useDevice(subscribe?: WsSubscribe) {
       const active = list.find((d) => d.is_connected) ?? null
       if (active) {
         setConnectedDevice(active)
-      } else if (list.length === 1) {
-        // Auto-connect when exactly one device is found
+      } else if (list.length === 1 && !isMac) {
+        // Windows keeps its single-device shortcut; Mac scan is read-only.
         try {
           await connectDevice(list[0].udid)
           const refreshed = await listDevices()
@@ -233,6 +274,7 @@ export function useDevice(subscribe?: WsSubscribe) {
   // hand today. State is persisted so a pin survives an app restart.
   const PIN_KEY = 'locwarp.tunnel.pinned'
   const readPinned = (): string[] => {
+    if (isMac) return []
     try {
       const arr = JSON.parse(localStorage.getItem(PIN_KEY) || '[]')
       return Array.isArray(arr) ? arr.filter((x) => typeof x === 'string') : []
@@ -287,6 +329,7 @@ export function useDevice(subscribe?: WsSubscribe) {
   const PIN_IP_MAP_KEY = 'locwarp.tunnel.pin_ip_map'
 
   const togglePin = useCallback((udid: string) => {
+    if (isMac) return
     setPinnedUdids((prev) => {
       const next = prev.includes(udid) ? prev.filter((u) => u !== udid) : [...prev, udid]
       try { localStorage.setItem(PIN_KEY, JSON.stringify(next)) } catch { /* ignore */ }
@@ -315,10 +358,10 @@ export function useDevice(subscribe?: WsSubscribe) {
     })
   }, [clearPinRetry])
 
-  // Drive pin retries off the tunnel lifecycle events. Kept separate from
+  // Drive Windows pin retries off the tunnel lifecycle events. Kept separate from
   // the panel-state handler above so ordering / deps stay simple.
   useEffect(() => {
-    if (!subscribe) return
+    if (isMac || !subscribe) return
     return subscribe((msg) => {
       if (msg.type === 'tunnel_lost') {
         const udid = msg.data?.udid
@@ -495,5 +538,7 @@ export function useDevice(subscribe?: WsSubscribe) {
     startWifiTunnel, checkTunnelStatus, stopTunnel, tunnelStatus, tunnels,
     connectedDevices, primaryDevice,
     pinnedUdids, togglePin,
+    autoConnectUdids, toggleAutoConnect, autoConnectError,
+    autoConnectBusy: autoConnectBusy || !autoConnectReady,
   }
 }

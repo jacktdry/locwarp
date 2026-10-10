@@ -112,6 +112,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 // Device
 export const listDevices = () => request<any[]>('GET', '/api/device/list')
+export interface AutoConnectSettings { approved_udids: string[]; max_devices: number }
+export const getAutoConnectSettings = () => request<AutoConnectSettings>('GET', '/api/device/auto-connect')
+export const setDeviceAutoConnect = (udid: string, enabled: boolean) =>
+  request<AutoConnectSettings & { udid: string; enabled: boolean }>(
+    'POST', `/api/device/${encodeURIComponent(udid)}/auto-connect`, { enabled })
 export const connectDevice = (udid: string) => request<any>('POST', `/api/device/${udid}/connect`)
 export const disconnectDevice = (udid: string) => request<any>('DELETE', `/api/device/${udid}/connect`)
 export const wifiConnect = (ip: string) => request<any>('POST', '/api/device/wifi/connect', { ip })

@@ -109,6 +109,7 @@ class _ActiveConnection:
     rsd: Optional[RemoteServiceDiscoveryService] = None
     location_service: Optional[LocationService] = None
     usbmux_lockdown: object = None  # Original lockdown client (for legacy fallback on iOS 17+)
+    _cleanup_task: Optional[asyncio.Task] = None
 
 
 class DeviceManager:
@@ -128,6 +129,16 @@ class DeviceManager:
     def __init__(self) -> None:
         self._connections: Dict[str, _ActiveConnection] = {}
         self._lock = asyncio.Lock()
+        # Owned PreferredRsdTunnel context, including handshake-before-publish.
+        # pymobiledevice3 11.26 permits only one process-wide userspace relay.
+        self._mac_usb_userspace_context: object = None
+        # Coordination keys are case-insensitive; published UDIDs retain their case.
+        self._connection_locks: dict[str, asyncio.Lock] = {}
+        self._disconnect_generations: dict[str, int] = {}
+        self._user_disconnected: set[str] = set()
+        self._connection_reservations: set[str] = set()
+        self._native_recoveries: dict[str, asyncio.Task] = {}
+        self._native_recovery_waiters: dict[str, set[asyncio.Task]] = {}
 
     # ------------------------------------------------------------------
     # Discovery
@@ -279,95 +290,151 @@ class DeviceManager:
     # Connection
     # ------------------------------------------------------------------
 
-    async def connect(self, udid: str) -> None:
-        """
-        Establish a connection appropriate for the device's iOS version.
+    def auto_connect_allowed(self, udid: str) -> bool:
+        return udid.lower() not in self._user_disconnected
 
-        Supports both USB and WiFi (Network) connections via usbmuxd.
+    def mark_user_disconnected(self, udid: str) -> None:
+        """Persist session intent across USB polls, failures and unplug/replug."""
+        key = udid.lower()
+        self._user_disconnected.add(key)
+        self._disconnect_generations[key] = self._disconnect_generations.get(key, 0) + 1
 
-        * **iOS 17+** -- TCP tunnel via CoreDeviceTunnelProxy + RSD.
-        * **iOS 16.x** -- plain lockdown over usbmux + legacy location service.
+    def _connection_lock(self, udid: str) -> asyncio.Lock:
+        return self._connection_locks.setdefault(udid.lower(), asyncio.Lock())
+
+    def canonical_udid(self, udid: str) -> str:
+        key = udid.lower()
+        return next((u for u in self._connections if u.lower() == key), udid)
+
+    async def connect(self, udid: str, *, user_initiated: bool = False,
+                      native_record: dict | None = None, approval_check=None,
+                      prepare_connection=None) -> _ActiveConnection | None:
+        """Serialize one device's handshake/publication without blocking siblings.
+
+        A disconnect invalidates every earlier request, including lock waiters.
+        Only explicit user connect clears the session's auto-reconnect suppression.
         """
-        async with self._lock:
-            if udid in self._connections:
-                logger.info("Device %s is already connected", udid)
+        key = udid.lower()
+        if user_initiated:
+            self._user_disconnected.discard(key)
+        generation = self._disconnect_generations.get(key, 0)
+        async with self._connection_lock(udid):
+            def check_intent():
+                if (generation != self._disconnect_generations.get(key, 0)
+                        or not self.auto_connect_allowed(udid)
+                        or (approval_check is not None and not approval_check())):
+                    raise ConnectionAbortedError(f"Connection to {udid} was disconnected")
+
+            check_intent()
+            if any(u.lower() == key for u in self._connections):
                 return
+            if self.connection_count() >= 3:
+                raise RuntimeError("Maximum of 3 connected devices reached")
+            self._connection_reservations.add(key)
+            conn = None
+            try:
+                conn = await self._open_connection(udid, native_record=native_record,
+                                                   require_native_record=approval_check is not None)
+                if prepare_connection is not None:
+                    await prepare_connection(conn)
+                check_intent()
+                async with self._lock:
+                    check_intent()
+                    self._connections[udid] = conn
+                return conn
+            except BaseException:
+                if conn is not None:
+                    await self._close_connection(conn)
+                raise
+            finally:
+                self._connection_reservations.discard(key)
 
-        # Detect connection type from usbmux device list. macOS can also
-        # connect an Apple-native paired Wi-Fi record missing from USBmux.
-        connection_type = "USB"
-        in_usbmux = False
+    async def _open_connection(self, udid: str, *, native_record: dict | None = None,
+                               require_native_record: bool = False) -> _ActiveConnection:
+        conn = None
+        lockdown = None
         try:
-            raw_devices = await list_devices()
-            for raw in raw_devices:
-                if raw.serial == udid:
-                    in_usbmux = True
-                    connection_type = getattr(raw, "connection_type", "USB")
-                    # Prefer USB if device shows up as both
-                    if connection_type == "USB":
-                        break
-        except Exception:
-            logger.debug("Could not determine connection type for %s", udid)
+            # Detect connection type from usbmux device list. macOS can also
+            # connect an Apple-native paired Wi-Fi record missing from USBmux.
+            connection_type = "USB"
+            in_usbmux = False
+            try:
+                raw_devices = await list_devices()
+                for raw in raw_devices:
+                    if raw.serial.lower() == udid.lower():
+                        in_usbmux = True
+                        connection_type = getattr(raw, "connection_type", "USB")
+                        # Prefer USB if device shows up as both
+                        if connection_type == "USB":
+                            break
+            except Exception:
+                logger.debug("Could not determine connection type for %s", udid)
 
-        if sys.platform == "darwin" and not in_usbmux:
-            records = await self._mac_native_candidates()
-            selected = next((r for r in records if r["udid"] == udid), None)
-            if selected is None:
-                raise RuntimeError("找不到已配對的 macOS Wi-Fi iPhone。請解鎖手機、確認同一網路後重新掃描。")
-            conn = await self._connect_tunnel(udid, None, "0.0", "Network")
-            # The OS version only becomes authoritative after the RSD
-            # handshake. Reject unsupported devices and release assertions.
-            rsd = conn.rsd
-            props = (getattr(rsd, "peer_info", None) or {}).get("Properties", {})
-            values = getattr(rsd, "all_values", None) or {}
-            version = (getattr(rsd, "product_version", None)
-                       or values.get("ProductVersion")
-                       or props.get("OSVersion") or "0.0")
-            if _parse_ios_version(version) < (17, 0):
-                await conn.tunnel_context.__aexit__(None, None, None)
-                raise UnsupportedIosVersionError(version)
-            name = values.get("DeviceName") or selected.get("name") or "iPhone"
-            _remember_device_name(udid, name)
-            conn.ios_version = version
-            conn.name = name
-            conn.connection_type = "Network"
-            async with self._lock:
-                self._connections[udid] = conn
-            logger.info("Connected to %s (iOS %s) via macOS native Wi-Fi", udid, version)
-            return
+            if sys.platform == "darwin" and (not in_usbmux or (native_record is not None and connection_type != "USB")):
+                if require_native_record and (native_record is None or (
+                        native_record.get("networkAdvertActive") is not True
+                        and (not in_usbmux or connection_type != "Network"))):
+                    raise ConnectionAbortedError("No reachable approved native Wi-Fi record")
+                records = [native_record] if native_record is not None else await self._mac_native_candidates()
+                selected = next((r for r in records if r["udid"].lower() == udid.lower()
+                                 and (native_record is None or (r.get("authState") or {}).get("rawCase") == "authenticated")), None)
+                if selected is None:
+                    raise RuntimeError("找不到已配對的 macOS Wi-Fi iPhone。請解鎖手機、確認同一網路後重新掃描。")
+                conn = await self._connect_tunnel(udid, None, "0.0", "Network")
+                # The OS version only becomes authoritative after the RSD
+                # handshake. Reject unsupported devices and release assertions.
+                rsd = conn.rsd
+                props = (getattr(rsd, "peer_info", None) or {}).get("Properties", {})
+                values = getattr(rsd, "all_values", None) or {}
+                version = (getattr(rsd, "product_version", None)
+                           or values.get("ProductVersion")
+                           or props.get("OSVersion") or "0.0")
+                if _parse_ios_version(version) < (17, 0):
+                    raise UnsupportedIosVersionError(version)
+                name = values.get("DeviceName") or selected.get("name") or "iPhone"
+                _remember_device_name(udid, name)
+                conn.ios_version = version
+                conn.name = name
+                conn.connection_type = "Network"
+                logger.info("Connected to %s (iOS %s) via macOS native Wi-Fi", udid, version)
+                return conn
 
-        logger.info("Connecting to %s via %s", udid, connection_type)
+            logger.info("Connecting to %s via %s", udid, connection_type)
 
-        # Create a fresh lockdown client to read the iOS version.
-        try:
-            lockdown = await create_using_usbmux(serial=udid)
-        except Exception:
-            logger.exception("Cannot create lockdown client for %s via %s", udid, connection_type)
+            # Create a fresh lockdown client to read the iOS version.
+            try:
+                lockdown = await create_using_usbmux(serial=udid)
+            except Exception:
+                logger.exception("Cannot create lockdown client for %s via %s", udid, connection_type)
+                raise
+
+            ios_version_str: str = lockdown.all_values.get("ProductVersion", "0.0")
+            device_name: str = lockdown.all_values.get("DeviceName", "iPhone")
+            _remember_device_name(udid, device_name)
+            ver = _parse_ios_version(ios_version_str)
+
+            if ver < (16, 0):
+                logger.warning(
+                    "Refusing connect: %s reports iOS %s, below minimum %s",
+                    udid, ios_version_str, UnsupportedIosVersionError.MIN_VERSION,
+                )
+                raise UnsupportedIosVersionError(ios_version_str)
+
+            if ver >= (17, 0):
+                conn = await self._connect_tunnel(udid, lockdown, ios_version_str, connection_type)
+            else:
+                conn = self._connect_legacy(udid, lockdown, ios_version_str)
+            conn.connection_type = connection_type
+            conn.name = device_name
+
+            logger.info("Connected to %s (iOS %s) via %s", udid, ios_version_str, connection_type)
+            return conn
+        except BaseException:
+            if conn is not None:
+                await self._close_connection(conn)
+            elif lockdown is not None:
+                await self._close_connection(_ActiveConnection(udid, lockdown, "0.0"))
             raise
-
-        ios_version_str: str = lockdown.all_values.get("ProductVersion", "0.0")
-        device_name: str = lockdown.all_values.get("DeviceName", "iPhone")
-        _remember_device_name(udid, device_name)
-        ver = _parse_ios_version(ios_version_str)
-
-        if ver < (16, 0):
-            logger.warning(
-                "Refusing connect: %s reports iOS %s, below minimum %s",
-                udid, ios_version_str, UnsupportedIosVersionError.MIN_VERSION,
-            )
-            raise UnsupportedIosVersionError(ios_version_str)
-
-        if ver >= (17, 0):
-            conn = await self._connect_tunnel(udid, lockdown, ios_version_str, connection_type)
-        else:
-            conn = self._connect_legacy(udid, lockdown, ios_version_str)
-        conn.connection_type = connection_type
-        conn.name = device_name
-
-        async with self._lock:
-            self._connections[udid] = conn
-
-        logger.info("Connected to %s (iOS %s) via %s", udid, ios_version_str, connection_type)
 
     # -- iOS 17+ via CoreDeviceTunnelProxy ---------------------------------
 
@@ -377,6 +444,8 @@ class DeviceManager:
         """Use an owned RSD tunnel appropriate for both OS and transport."""
         logger.debug("Establishing tunnel for %s (iOS %s, %s)", udid, ios_version, connection_type)
 
+        proxy = tunnel_ctx = rsd = None
+        second_usb_native = False
         try:
             if sys.platform == "darwin":
                 if connection_type == "Network":
@@ -387,10 +456,32 @@ class DeviceManager:
                     from pymobiledevice3.remote.native_tunnel import NativeRemotedTunnel
                     tunnel_ctx = NativeRemotedTunnel(serial=udid)
                 else:
-                    # USB keeps its tested no-root userspace path.
-                    from pymobiledevice3.remote.rsd_tunnel import PreferredRsdTunnel
-                    tunnel_ctx = PreferredRsdTunnel(serial=udid, autopair=False)
-                rsd = await tunnel_ctx.__aenter__()
+                    # Prefer the tested userspace path for the first USB.
+                    # Reserve before awaiting: two concurrent USB handshakes
+                    # must not both try the process-global userspace singleton.
+                    second_usb_native = self._mac_usb_userspace_context is not None or any(
+                        conn.connection_type == "USB" and conn.tunnel_context is not None
+                        and type(getattr(conn.tunnel_context, "_handle", None)).__name__ == "UserspaceRsdTunnel"
+                        for conn in self._connections.values()
+                    )
+                    if second_usb_native:
+                        # Preferred(prefer_native=True) falls back to userspace
+                        # on native failure, which is unsafe while occupied.
+                        from pymobiledevice3.remote.native_tunnel import NativeRemotedTunnel
+                        tunnel_ctx = NativeRemotedTunnel(serial=udid)
+                    else:
+                        from pymobiledevice3.remote.rsd_tunnel import PreferredRsdTunnel
+                        tunnel_ctx = PreferredRsdTunnel(serial=udid, autopair=False)
+                        self._mac_usb_userspace_context = tunnel_ctx
+                if second_usb_native:
+                    rsd = await asyncio.wait_for(tunnel_ctx.__aenter__(), timeout=10)
+                else:
+                    rsd = await tunnel_ctx.__aenter__()
+                # Preferred may itself choose native (e.g. iOS 17.0-17.3).
+                # Its owned concrete handle is authoritative for this version.
+                if (self._mac_usb_userspace_context is tunnel_ctx
+                        and type(getattr(tunnel_ctx, "_handle", None)).__name__ == "NativeRemotedTunnel"):
+                    self._mac_usb_userspace_context = None
                 return _ActiveConnection(
                     udid=udid,
                     lockdown=rsd,
@@ -420,7 +511,13 @@ class DeviceManager:
                 rsd=rsd,
                 usbmux_lockdown=lockdown,
             )
-        except Exception:
+        except BaseException as exc:
+            await self._close_connection(_ActiveConnection(
+                udid=udid, lockdown=None, ios_version=ios_version,
+                tunnel_proxy=proxy, tunnel_context=tunnel_ctx, rsd=rsd,
+            ))
+            if not isinstance(exc, Exception):
+                raise
             if sys.platform == "darwin":
                 logger.exception("macOS %s RSD tunnel failed for %s", connection_type, udid)
                 if connection_type == "Network":
@@ -430,6 +527,13 @@ class DeviceManager:
                         "若有 VPN、HomiPlay 等網路軟體，請檢查其網路設定。"
                         " / macOS Wi-Fi native tunnel failed: verify pairing, local network, "
                         "device unlock, and VPN routing."
+                    ) from None
+                if second_usb_native:
+                    raise RuntimeError(
+                        "第二台 USB 裝置的 macOS 原生通道無法建立。第一台連線已保留。"
+                        "請解鎖手機，在 Finder 完成配對並啟用 Wi-Fi 顯示，確認同一網路後重試；"
+                        "不需要管理員權限。 / macOS second USB native tunnel failed: "
+                        "first connection retained; unlock, pair in Finder, enable Wi-Fi and retry."
                     ) from None
                 raise RuntimeError(
                     "macOS USB 通道無法建立。請解鎖並信任 Mac、啟用開發者模式，"
@@ -467,13 +571,44 @@ class DeviceManager:
 
     async def disconnect(self, udid: str) -> None:
         """Tear down the connection and clean up resources for *udid*."""
-        async with self._lock:
-            conn = self._connections.pop(udid, None)
+        key = udid.lower()
+        self._disconnect_generations[key] = self._disconnect_generations.get(key, 0) + 1
+        recovery = self._native_recoveries.get(key)
+        if recovery is not None and recovery is not asyncio.current_task() and not recovery.done():
+            recovery.cancel()
+        async with self._connection_lock(udid):
+            async with self._lock:
+                stored_udid = next((u for u in self._connections if u.lower() == key), udid)
+                conn = self._connections.pop(stored_udid, None)
+            if conn is not None:
+                await self._close_connection(conn)
 
-        if conn is None:
-            logger.warning("Disconnect requested for unknown device %s", udid)
-            return
+    @staticmethod
+    async def _close_lockdown(lockdown, udid: str) -> None:
+        try:
+            await lockdown.close()
+        except Exception:
+            logger.exception("Error closing lockdown for %s", udid)
 
+    async def _close_connection(self, conn: _ActiveConnection) -> None:
+        # Finish releasing owned handles even if the caller is cancelled again.
+        if conn._cleanup_task is None:
+            conn._cleanup_task = asyncio.create_task(self._close_connection_handles(conn))
+        cleanup = conn._cleanup_task
+        cancelled = False
+        while not cleanup.done():
+            try:
+                # wait always suspends and never forwards caller cancellation
+                # to the single owned cleanup task.
+                await asyncio.wait({cleanup})
+            except asyncio.CancelledError:
+                cancelled = True
+        cleanup.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _close_connection_handles(self, conn: _ActiveConnection) -> None:
+        udid = conn.udid
         # Clear any active location simulation first.
         if conn.location_service is not None:
             try:
@@ -489,7 +624,7 @@ class DeviceManager:
                 logger.exception("Error closing DvtProvider for %s", udid)
 
         # Close RSD.
-        if conn.rsd is not None:
+        if conn.rsd is not None and (conn.tunnel_context is None or conn.tunnel_proxy is not None):
             try:
                 await conn.rsd.close()
             except Exception:
@@ -499,16 +634,24 @@ class DeviceManager:
         if conn.tunnel_context is not None:
             try:
                 await conn.tunnel_context.__aexit__(None, None, None)
+                if self._mac_usb_userspace_context is conn.tunnel_context:
+                    self._mac_usb_userspace_context = None
             except Exception:
                 logger.exception("Error closing tunnel for %s", udid)
 
         # Close tunnel proxy.
         if conn.tunnel_proxy is not None:
             try:
-                conn.tunnel_proxy.close()
+                await conn.tunnel_proxy.close()
             except Exception:
                 logger.exception("Error closing tunnel proxy for %s", udid)
 
+        # macOS contexts own their RSD; kernel proxies have a separate RSD.
+        lockdown = conn.usbmux_lockdown
+        if lockdown is None and conn.rsd is None:
+            lockdown = conn.lockdown
+        if lockdown is not None:
+            await self._close_lockdown(lockdown, udid)
         logger.info("Disconnected device %s", udid)
 
     # ------------------------------------------------------------------
@@ -526,6 +669,7 @@ class DeviceManager:
 
         The service is cached on the connection so subsequent calls are cheap.
         """
+        udid = self.canonical_udid(udid)
         async with self._lock:
             conn = self._connections.get(udid)
 
@@ -677,7 +821,7 @@ class DeviceManager:
                 pass
 
     async def _create_dvt_location_service(
-        self, conn: _ActiveConnection
+        self, conn: _ActiveConnection, *, strict: bool = False
     ) -> DvtLocationService:
         """Spin up a DVT provider and hand it to ``DvtLocationService``.
 
@@ -692,8 +836,8 @@ class DeviceManager:
 
         try:
             dvt = DvtProvider(conn.lockdown)
-            await dvt.__aenter__()
             conn.dvt_provider = dvt
+            await dvt.__aenter__()
             logger.debug("DVT provider opened for %s", conn.udid)
             # Bind a per-udid factory so DvtLocationService._reconnect can
             # ask us for a fresh DvtProvider on the *current* lockdown.
@@ -706,12 +850,18 @@ class DeviceManager:
             async def _factory(_udid: str = udid) -> DvtProvider:
                 return await self.get_fresh_dvt_provider(_udid)
 
-            return DvtLocationService(
+            service = DvtLocationService(
                 dvt,
                 lockdown=conn.lockdown,
                 dvt_factory=_factory,
             )
+            if strict:
+                # Open the instrument without pushing a GPS coordinate.
+                await service._ensure_instrument()
+            return service
         except Exception as dvt_exc:
+            if strict:
+                raise
             logger.warning(
                 "DVT location service failed for %s (%s). Falling back to "
                 "legacy DtSimulateLocation over lockdown.",
@@ -938,6 +1088,16 @@ class DeviceManager:
     # Recovery helpers (used by location_service factory + API safety net)
     # ------------------------------------------------------------------
 
+    def connection_count(self) -> int:
+        return len({u.lower() for u in self._connections}
+                   | self._connection_reservations | set(self._native_recoveries))
+
+    def is_native_wifi(self, udid: str) -> bool:
+        conn = self._connections.get(udid)
+        return (sys.platform == "darwin" and conn is not None
+                and conn.connection_type == "Network" and conn.tunnel_context is not None
+                and conn.tunnel_proxy is None)
+
     async def get_fresh_dvt_provider(
         self, udid: str, *, timeout: float = 15.0
     ) -> DvtProvider:
@@ -958,12 +1118,16 @@ class DeviceManager:
         import time
         deadline = time.monotonic() + timeout
         last_exc: Exception | None = None
+        native = self.is_native_wifi(udid)
+        generation = self._disconnect_generations.get(udid.lower(), 0)
+        attempts = 0
 
         while True:
             async with self._lock:
                 conn = self._connections.get(udid)
 
-            if conn is None:
+            if (conn is None or not self.auto_connect_allowed(udid)
+                    or generation != self._disconnect_generations.get(udid.lower(), 0)):
                 raise DeviceLostError(
                     f"Device {udid} no longer connected",
                     reason=DeviceLostError.REASON_USB_GONE,
@@ -973,7 +1137,7 @@ class DeviceManager:
             # is in the middle of restarting it — wait until either a fresh
             # runner appears (success path swaps in a new TunnelRunner and
             # replaces conn.lockdown along the way) or we time out.
-            if conn.connection_type == "Network":
+            if conn.connection_type == "Network" and not native:
                 runner = None
                 try:
                     from api.device import _tunnels  # local import: avoids cycle at module load
@@ -991,13 +1155,25 @@ class DeviceManager:
                     continue
 
             # USB, or WiFi with a live tunnel: try opening a new DvtProvider.
+            new_dvt = None
             try:
+                attempts += 1
                 new_dvt = DvtProvider(conn.lockdown)
-                await new_dvt.__aenter__()
-            except Exception as exc:
+                if native:
+                    await asyncio.wait_for(new_dvt.__aenter__(), timeout=min(5.0, timeout))
+                else:
+                    await new_dvt.__aenter__()
+            except BaseException as exc:
+                try:
+                    if new_dvt is not None:
+                        await new_dvt.__aexit__(None, None, None)
+                except Exception:
+                    logger.debug("Failed to close unsuccessful DVT provider", exc_info=True)
+                if not isinstance(exc, Exception):
+                    raise
                 last_exc = exc
                 remaining = deadline - time.monotonic()
-                if remaining <= 0:
+                if remaining <= 0 or (native and attempts >= 3):
                     logger.warning(
                         "get_fresh_dvt_provider exhausted for %s: %s", udid, exc,
                     )
@@ -1007,6 +1183,12 @@ class DeviceManager:
                     ) from exc
                 await asyncio.sleep(min(0.5, remaining))
                 continue
+
+            if (self._connections.get(udid) is not conn
+                    or not self.auto_connect_allowed(udid)
+                    or generation != self._disconnect_generations.get(udid.lower(), 0)):
+                await new_dvt.__aexit__(None, None, None)
+                raise DeviceLostError("Connection changed during DVT recovery")
 
             # Success — swap into the active connection record so future
             # discover/clear paths find it. Best-effort close on the old.
@@ -1039,6 +1221,35 @@ class DeviceManager:
             conn = self._connections.get(udid)
         conn_type = conn.connection_type if conn else None
 
+        if self.is_native_wifi(udid) or udid.lower() in self._native_recoveries:
+            key = udid.lower()
+            task = self._native_recoveries.get(key)
+            if task is None:
+                from main import app_state
+                task = asyncio.create_task(app_state.recover_native_wifi(udid))
+                self._native_recoveries[key] = task
+                def done(completed):
+                    if self._native_recoveries.get(key) is completed:
+                        self._native_recoveries.pop(key, None)
+                task.add_done_callback(done)
+            waiter = asyncio.current_task()
+            generation = self._disconnect_generations.get(key, 0)
+            waiters = self._native_recovery_waiters.setdefault(key, set())
+            waiters.add(waiter)
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if (not waiter.cancelling()
+                        and generation != self._disconnect_generations.get(key, 0)):
+                    return False
+                raise
+            finally:
+                waiters.discard(waiter)
+                if not waiters:
+                    self._native_recovery_waiters.pop(key, None)
+
+        if conn is None or not self.auto_connect_allowed(udid):
+            return False
         if conn_type == "Network":
             try:
                 from api.device import _tunnels, _attempt_tunnel_restart
@@ -1075,7 +1286,11 @@ class DeviceManager:
 
     async def disconnect_all(self) -> None:
         """Disconnect every active device."""
-        udids = list(self._connections.keys())
+        udids = list(dict.fromkeys([*self._connections, *self._native_recoveries]))
+        # Invalidate every pending recovery before awaiting any sibling cleanup.
+        for udid in udids:
+            key = udid.lower()
+            self._disconnect_generations[key] = self._disconnect_generations.get(key, 0) + 1
         for udid in udids:
             await self.disconnect(udid)
         logger.info("All devices disconnected")

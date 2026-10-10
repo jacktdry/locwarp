@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import sys
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
@@ -59,6 +60,25 @@ logging.basicConfig(level=logging.INFO, format=_log_fmt, handlers=_handlers, for
 logger = logging.getLogger("locwarp")
 
 
+MAX_AUTO_CONNECT_DEVICES = 3
+
+
+def approved_udids(value) -> list[str]:
+    """Validate persisted selections without trusting arbitrary settings payloads."""
+    if not isinstance(value, list):
+        return []
+    result = []
+    for udid in value:
+        if not isinstance(udid, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,128}", udid):
+            continue
+        key = udid.lower()
+        if key not in result:
+            result.append(key)
+        if len(result) == MAX_AUTO_CONNECT_DEVICES:
+            break
+    return result
+
+
 class AppState:
     """Central application state — shared across API endpoints."""
 
@@ -92,6 +112,7 @@ class AppState:
         # WiFi tunnel keep-alive: re-push the current simulated location to
         # idle Network tunnels so iOS doesn't drop the RSD socket when the
         # phone screen turns off. Default ON; user can toggle in the panel.
+        self._auto_connect_udids: list[str] = []
         self._wifi_keepalive_enabled: bool = True
         self._load_settings()
 
@@ -100,6 +121,7 @@ class AppState:
         data = safe_load_json(SETTINGS_FILE)
         if not isinstance(data, dict):
             return
+        self._auto_connect_udids = approved_udids(data.get("auto_connect_udids"))
         try:
             pos = data.get("last_position")
             if pos:
@@ -136,8 +158,9 @@ class AppState:
             "geocode_provider": self._geocode_provider,
             "google_geocode_key": self._google_geocode_key,
             "wifi_keepalive_enabled": self._wifi_keepalive_enabled,
+            "auto_connect_udids": list(self._auto_connect_udids),
         }
-        safe_write_json(SETTINGS_FILE, data)
+        return safe_write_json(SETTINGS_FILE, data)
 
     def get_initial_position(self) -> dict:
         if self._last_position:
@@ -173,7 +196,7 @@ class AppState:
             return self.simulation_engine
         return self.simulation_engines.get(udid)
 
-    async def create_engine_for_device(self, udid: str):
+    async def create_engine_for_device(self, udid: str, *, replace: bool = False):
         """Create a SimulationEngine for the connected device.
 
         Idempotent: if an engine already exists for this udid, we
@@ -187,15 +210,22 @@ class AppState:
         navigate: no current position" because the engine they're
         aiming at is a fresh one that never saw the teleport.
         """
-        if udid in self.simulation_engines:
+        udid = self.device_manager.canonical_udid(udid)
+        if udid in self.simulation_engines and not replace:
             logger.debug("Simulation engine already exists for %s; preserving current_position", udid)
             return
         from core.simulation_engine import SimulationEngine
         from api.websocket import broadcast
 
+        connection = self.device_manager._connections.get(udid)
         loc_service = await self.device_manager.get_location_service(udid)
+        if (self.device_manager._connections.get(udid) is not connection
+                or not self.device_manager.auto_connect_allowed(udid)):
+            raise ConnectionAbortedError("Connection changed during engine creation")
 
         async def event_callback(event_type: str, data: dict):
+            if self.simulation_engines.get(udid) is not engine:
+                return
             # Always tag emissions with udid so the frontend can route per-device.
             if isinstance(data, dict) and "udid" not in data:
                 data = {**data, "udid": udid}
@@ -203,7 +233,36 @@ class AppState:
             if event_type == "position_update" and "lat" in data:
                 self.update_last_position(data["lat"], data["lng"])
 
-        engine = SimulationEngine(loc_service, event_callback)
+        async def recover_position(lat, lng):
+            if not self.device_manager.is_native_wifi(udid):
+                return False
+            if not await self.device_manager.full_reconnect(udid):
+                return False
+            current = self.simulation_engines.get(udid)
+            if current is None or not self.device_manager.auto_connect_allowed(udid):
+                return False
+            if getattr(current, '_native_route_resume', False):
+                # The resumed route owns all writes, including its snapshot
+                # teleport. The failed engine must not write to this service.
+                return True
+            from services.location_service import DeviceLostError
+            connection = self.device_manager._connections.get(udid)
+            try:
+                await asyncio.wait_for(current.location_service.set(lat, lng), timeout=10.0)
+            except (DeviceLostError, OSError, EOFError, asyncio.TimeoutError):
+                if self.device_manager._connections.get(udid) is connection:
+                    from api.location import _handle_device_lost
+                    connection.location_service = None
+                    await _handle_device_lost(DeviceLostError("Native position retry failed"), udid)
+                return False
+            if (not self.device_manager.auto_connect_allowed(udid)
+                    or self.simulation_engines.get(udid) is not current):
+                return False
+            from models.schemas import Coordinate
+            current.current_position = Coordinate(lat=lat, lng=lng)
+            return True
+
+        engine = SimulationEngine(loc_service, event_callback, recover_position)
         self.simulation_engines[udid] = engine
         # Keep the existing primary on additional device connects. If no
         # primary is set (e.g. fresh install, first device), this udid
@@ -225,6 +284,124 @@ class AppState:
         self.reconnect_manager = ReconnectManager(self.device_manager)
 
         logger.info("Simulation engine created for device %s (no initial location pushed)", udid)
+
+
+    async def recover_native_wifi(self, udid: str) -> bool:
+        """Operation-triggered native recovery; never consult the Windows runner registry."""
+        from api.websocket import broadcast
+        from models.schemas import SimulationState
+        dm = self.device_manager
+        udid = dm.canonical_udid(udid)
+        key = udid.lower()
+        generation = dm._disconnect_generations.get(key, 0)
+        old_conn = dm._connections.get(udid)
+        old_engine = self.simulation_engines.get(udid)
+        snapshot = old_engine.capture_resumable_snapshot() if old_engine else None
+        position = old_engine.current_position if old_engine else None
+        new_conn = None
+        success = False
+
+        def valid():
+            return (dm.auto_connect_allowed(udid)
+                    and generation == dm._disconnect_generations.get(key, 0))
+
+        async def emit(event, **data):
+            try:
+                await broadcast(event, {"udid": udid, **data})
+            except Exception:
+                logger.debug("Native recovery event failed", exc_info=True)
+
+        def stop_engine(engine):
+            if engine is None:
+                return
+            engine.state = SimulationState.DISCONNECTED
+            engine._stop_event.set()
+            engine._pause_event.set()
+            for name in ('_active_task', '_splice_resume_task', '_native_resume_task', '_native_follow_task'):
+                task = getattr(engine, name, None)
+                waiters = dm._native_recovery_waiters.get(key, set())
+                # The resume wrapper awaits _active_task; cancelling that parent
+                # would also cancel the route currently requesting recovery.
+                requesting_route = getattr(engine, '_active_task', None) in waiters
+                if (task is not None and task not in waiters and not task.done()
+                        and not (name == '_native_resume_task' and requesting_route)):
+                    task.cancel()
+
+        # full_reconnect runs this task separately; don't cancel the initiating
+        # route/follower while it awaits our result (that would cancel its API).
+        async with dm._connection_lock(udid):
+            if not valid() or dm._connections.get(udid) is not old_conn or old_conn is None:
+                return False
+            await emit('tunnel_degraded', reason='native_dvt_failed')
+            stop_engine(old_engine)
+            # Don't clear location over a dead transport: clear() can initiate
+            # another recovery and is not a health probe.
+            old_conn.location_service = None
+            dm._connections.pop(udid, None)
+            try:
+                await dm._close_connection(old_conn)
+                for attempt, delay in enumerate((0.0, 0.5, 1.5), 1):
+                    if delay:
+                        await asyncio.sleep(delay)
+                    if not valid():
+                        break
+                    try:
+                        async def open_ready():
+                            nonlocal new_conn
+                            new_conn = await dm._connect_tunnel(udid, None, old_conn.ios_version, 'Network')
+                            new_conn.name = old_conn.name
+                            new_conn.connection_type = 'Network'
+                            new_conn.location_service = await dm._create_dvt_location_service(new_conn, strict=True)
+                        await asyncio.wait_for(open_ready(), timeout=10.0)
+                        if not valid():
+                            break
+                        dm._connections[udid] = new_conn
+                        await self.create_engine_for_device(udid, replace=True)
+                        if not valid():
+                            break
+                        engine = self.simulation_engines[udid]
+                        engine.current_position = position
+                        engine._native_route_resume = bool(snapshot) or self._primary_udid != udid
+                        await emit('tunnel_recovered', connection_type='Network')
+                        if not valid():
+                            break
+                        await emit('device_connected', name=new_conn.name,
+                                   ios_version=new_conn.ios_version, connection_type='Network')
+                        if not valid():
+                            break
+                        async def resume():
+                            if not valid() or self.simulation_engines.get(udid) is not engine:
+                                return
+                            if snapshot:
+                                await engine.resume_from_snapshot(snapshot)
+                            elif self._primary_udid != udid:
+                                await _auto_sync_new_device_to_primary(udid)
+                        engine._native_resume_task = asyncio.create_task(resume())
+                        success = True
+                        return True
+                    except Exception:
+                        logger.warning("Native Wi-Fi recovery %s attempt %d failed", udid, attempt, exc_info=True)
+                        if new_conn is not None:
+                            if dm._connections.get(udid) is new_conn:
+                                dm._connections.pop(udid, None)
+                            await dm._close_connection(new_conn)
+                            new_conn = None
+            finally:
+                try:
+                    if new_conn is not None and not success:
+                        if dm._connections.get(udid) is new_conn:
+                            dm._connections.pop(udid, None)
+                        await dm._close_connection(new_conn)
+                finally:
+                    if not valid() or udid not in dm._connections:
+                        failed_engine = self.simulation_engines.pop(udid, None)
+                        stop_engine(failed_engine)
+                        if self._primary_udid == udid:
+                            self._primary_udid = next(iter(self.simulation_engines), None)
+                        if valid():
+                            await emit('device_disconnected', udids=[udid], reason='device_lost',
+                                       remaining_count=len(dm._connections))
+        return False
 
 
 app_state = AppState()
@@ -295,7 +472,9 @@ async def _auto_sync_new_device_to_primary(new_udid: str) -> None:
         return
 
     logger.info("Auto-sync: attaching %s as position-follower of primary %s", new_udid, primary_udid)
-    asyncio.create_task(_follow_primary_positions(new_udid, primary_udid))
+    follow_task = asyncio.create_task(_follow_primary_positions(new_udid, primary_udid))
+    if app_state.device_manager.is_native_wifi(new_udid):
+        new_eng._native_follow_task = follow_task
 
 
 async def _follow_primary_positions(follower_udid: str, primary_udid: str) -> None:
@@ -305,6 +484,7 @@ async def _follow_primary_positions(follower_udid: str, primary_udid: str) -> No
     _ensure_stopped), or the primary engine is gone."""
     import asyncio
     poll_interval = 0.5  # 500ms — primary's own updates run ~1 Hz, so this oversamples slightly without thrashing
+    original_follower = app_state.simulation_engines.get(follower_udid)
     last_pushed_lat: float | None = None
     last_pushed_lng: float | None = None
     while True:
@@ -314,7 +494,7 @@ async def _follow_primary_positions(follower_udid: str, primary_udid: str) -> No
                         follower_udid, primary_udid, app_state._primary_udid)
             return
         follower_eng = app_state.simulation_engines.get(follower_udid)
-        if follower_eng is None:
+        if follower_eng is None or follower_eng is not original_follower:
             logger.info("Follower %s: engine gone, stopping follow", follower_udid)
             return
         if follower_eng._stop_event.is_set():
@@ -534,7 +714,7 @@ async def _usbmux_presence_watchdog():
             # device cap. The user environment is assumed to only ever have
             # their own iPhones plugged in.
             MAX_DEVICES = 3
-            new_udids_lc = present_usb - connected
+            new_udids_lc = {u for u in present_usb - connected if dm.auto_connect_allowed(u)}
             if not new_udids_lc or len(connected) >= MAX_DEVICES:
                 continue
             # Map back to the original-case serials from list_devices so
@@ -630,7 +810,7 @@ async def _wifi_tunnel_keepalive():
     location for each Network-connected device whose engine is idle. The
     re-push doubles as keeping the fake location pinned. Active sims are
     skipped (they already generate traffic). Toggleable via settings —
-    issue #33."""
+    issue #33. Native macOS Wi-Fi is excluded; its recovery is operation-driven."""
     import asyncio
     from models.schemas import SimulationState
     KEEPALIVE_INTERVAL = 1.0
@@ -644,6 +824,9 @@ async def _wifi_tunnel_keepalive():
                 continue
             dm = app_state.device_manager
             for udid, conn in list(dm._connections.items()):
+                # Native recovery is driven by failed operations, not GPS probes.
+                if dm.is_native_wifi(udid):
+                    continue
                 if getattr(conn, "connection_type", "USB") != "Network":
                     continue
                 eng = app_state.simulation_engines.get(udid)
@@ -664,38 +847,134 @@ async def _wifi_tunnel_keepalive():
             logger.debug("WiFi keepalive loop iteration error", exc_info=True)
 
 
+async def _mac_native_autoconnect_supervisor():
+    """One shared, paced discovery with independent bounded device attempts."""
+    import time
+    from pymobiledevice3.usbmux import list_devices
+    from api.websocket import broadcast
+    pending: dict[str, asyncio.Task] = {}
+    failures: dict[str, int] = {}
+    retry_at: dict[str, float] = {}
+
+    async def attempt(udid, record, serial):
+        dm = app_state.device_manager
+        connection = engine = None
+        def allowed():
+            return (udid in app_state._auto_connect_udids and dm.auto_connect_allowed(udid))
+        async def prepare(conn):
+            nonlocal connection
+            connection = conn
+            if conn.connection_type == 'Network':
+                conn.location_service = await dm._create_dvt_location_service(conn, strict=True)
+        try:
+            connection = await asyncio.wait_for(dm.connect(
+                serial, native_record=record, approval_check=allowed,
+                prepare_connection=prepare), timeout=20)
+            if connection is None:
+                return
+            await asyncio.wait_for(app_state.create_engine_for_device(serial), timeout=10)
+            engine = app_state.simulation_engines.get(serial)
+            if not allowed():
+                raise ConnectionAbortedError("Auto-connect selection changed")
+            await broadcast('device_connected', {
+                'udid': serial, 'name': connection.name, 'ios_version': connection.ios_version,
+                'connection_type': connection.connection_type,
+            })
+            if allowed():
+                await asyncio.wait_for(_auto_sync_new_device_to_primary(serial), timeout=10)
+            failures.pop(udid, None)
+            retry_at.pop(udid, None)
+        except BaseException as exc:
+            # Ownership check preserves a later manual connection, or a sibling.
+            if connection is not None and dm._connections.get(serial) is connection:
+                current_engine = app_state.simulation_engines.get(serial)
+                if current_engine is not None and current_engine.location_service is connection.location_service:
+                    engine = current_engine
+                connection.location_service = None
+                await dm.disconnect(serial)
+                if app_state.simulation_engines.get(serial) is engine:
+                    app_state.simulation_engines.pop(serial, None)
+                if app_state._primary_udid == serial:
+                    app_state._primary_udid = next(iter(app_state.simulation_engines), None)
+            if not isinstance(exc, Exception):
+                raise
+            failures[udid] = min(failures.get(udid, 0) + 1, 7)
+            retry_at[udid] = time.monotonic() + min(5 * 2 ** (failures[udid] - 1), 300)
+            logger.debug("Native auto-connect for %s failed; backing off", udid, exc_info=True)
+
+    try:
+        while True:
+            selected = list(app_state._auto_connect_udids)
+            dm = app_state.device_manager
+            for udid, task in list(pending.items()):
+                if task.done():
+                    task.result()
+                    pending.pop(udid, None)
+            wanted = [u for u in selected if dm.auto_connect_allowed(u)
+                      and not any(c.lower() == u for c in dm.connected_udids)
+                      and u not in pending and time.monotonic() >= retry_at.get(u, 0)]
+            if wanted and dm.connection_count() < MAX_AUTO_CONNECT_DEVICES:
+                try:
+                    raw = await asyncio.wait_for(list_devices(), timeout=3)
+                    records = await dm._mac_native_candidates()
+                    paired = {r['udid'].lower(): r for r in records}
+                    usb = {r.serial.lower(): r.serial for r in raw if getattr(r, 'connection_type', 'USB') == 'USB'}
+                    network = {r.serial.lower() for r in raw if getattr(r, 'connection_type', 'USB') == 'Network'}
+                    for udid in wanted:
+                        record = paired.get(udid)
+                        reachable = record is not None and (record.get('networkAdvertActive') is True or udid in network)
+                        if udid in usb or reachable:
+                            pending[udid] = asyncio.create_task(attempt(udid, record, usb.get(udid) or record['udid']))
+                except Exception:
+                    logger.debug("Native auto-connect discovery unavailable", exc_info=True)
+            await asyncio.sleep(10)
+    finally:
+        for task in pending.values():
+            task.cancel()
+        await asyncio.gather(*pending.values(), return_exceptions=True)
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     import asyncio
     # ── Startup ──
     logger.info("LocWarp starting — scanning for devices…")
-    try:
-        devices = await app_state.device_manager.discover_devices()
-        if devices:
-            target = devices[0]
-            logger.info("Found device %s (%s), auto-connecting…", target.name, target.udid)
-            await app_state.device_manager.connect(target.udid)
-            await app_state.create_engine_for_device(target.udid)
-            logger.info("Auto-connected to %s", target.udid)
-        else:
-            logger.info("No iOS devices found on startup")
-    except Exception:
-        logger.exception("Auto-connect on startup failed (device may need manual connect)")
+    if sys.platform != "darwin":
+        try:
+            devices = await app_state.device_manager.discover_devices()
+            if devices:
+                target = devices[0]
+                logger.info("Found device %s (%s), auto-connecting…", target.name, target.udid)
+                await app_state.device_manager.connect(target.udid)
+                await app_state.create_engine_for_device(target.udid)
+                logger.info("Auto-connected to %s", target.udid)
+            else:
+                logger.info("No iOS devices found on startup")
+        except Exception:
+            logger.exception("Auto-connect on startup failed (device may need manual connect)")
 
     watchdog_task = asyncio.create_task(_usbmux_presence_watchdog())
     keepalive_task = asyncio.create_task(_wifi_tunnel_keepalive())
+    native_task = asyncio.create_task(_mac_native_autoconnect_supervisor()) if sys.platform == "darwin" else None
 
     yield
 
     # ── Shutdown ──
     watchdog_task.cancel()
     keepalive_task.cancel()
-    for _t in (watchdog_task, keepalive_task):
+    if native_task is not None:
+        native_task.cancel()
+    for _t in [watchdog_task, keepalive_task, *([native_task] if native_task else [])]:
         try:
             await _t
         except (asyncio.CancelledError, Exception):
             pass
 
+    for engine in list(app_state.simulation_engines.values()):
+        for name in ('_native_resume_task', '_native_follow_task'):
+            task = getattr(engine, name, None)
+            if task is not None and not task.done():
+                task.cancel()
     app_state.save_settings()
     await app_state.device_manager.disconnect_all()
     logger.info("LocWarp shut down")

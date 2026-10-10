@@ -10,6 +10,7 @@ interface Device {
   name: string;
   iosVersion: string;
   connectionType?: string;
+  isConnected?: boolean;
   developerModeEnabled?: boolean | null;
 }
 
@@ -32,6 +33,10 @@ interface DeviceStatusProps {
   onWifiConnect?: (ip: string) => Promise<any>;
   pinnedUdids?: string[];
   onTogglePin?: (udid: string) => void;
+  autoConnectUdids?: string[];
+  onToggleAutoConnect?: (udid: string) => void | Promise<void>;
+  autoConnectBusy?: boolean;
+  autoConnectError?: string | null;
 }
 
 const DeviceStatus: React.FC<DeviceStatusProps> = ({
@@ -47,6 +52,7 @@ const DeviceStatus: React.FC<DeviceStatusProps> = ({
   onWifiConnect,
   pinnedUdids = [],
   onTogglePin,
+  autoConnectUdids = [], onToggleAutoConnect, autoConnectBusy = false, autoConnectError,
 }) => {
   const t = useT();
   // Windows' privileged RemotePairing repair/tunnel UI must not be offered
@@ -491,6 +497,23 @@ const DeviceStatus: React.FC<DeviceStatusProps> = ({
           <p style={{ fontSize: 11, opacity: 0.8, lineHeight: 1.65, margin: '0 0 8px', whiteSpace: 'pre-line' }}>
             {t('wifi.mac_help')}
           </p>
+          <p style={{ fontSize: 11, opacity: 0.8 }}>{t('wifi.mac_auto_connect_help')}</p>
+          {devices.filter((d) => d.connectionType === 'Network' || d.connectionType === 'USB').map((d) => {
+            const enabled = autoConnectUdids.includes(d.id.toLowerCase());
+            return <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <span style={{ flex: 1, fontSize: 12 }}>{d.name} · {t(d.isConnected ? 'status.connected' : 'status.disconnected')}</span>
+              <button type="button" aria-pressed={enabled}
+                aria-label={`${t('wifi.mac_auto_connect')} ${d.name}`}
+                disabled={autoConnectBusy || (!enabled && autoConnectUdids.length >= 3)}
+                onClick={() => onToggleAutoConnect?.(d.id)}
+                style={{ fontSize: 11, padding: '5px 8px', borderRadius: 5,
+                  border: enabled ? '1px solid #6c8cff' : '1px solid #555',
+                  background: enabled ? 'rgba(108,140,255,0.15)' : 'transparent', color: 'inherit' }}>
+                {t(enabled ? 'wifi.pin_on' : 'wifi.mac_auto_connect')}
+              </button>
+            </div>;
+          })}
+          {autoConnectError && <p role="alert" style={{ fontSize: 11, color: '#f44336' }}>{autoConnectError}</p>}
           <button onClick={onScan} style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #6c8cff',
             borderRadius: 5, background: 'rgba(108,140,255,0.13)', color: '#9ab0ff', cursor: 'pointer' }}>
             {t('wifi.mac_scan')}

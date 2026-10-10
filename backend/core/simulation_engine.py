@@ -100,8 +100,9 @@ class SimulationEngine:
         used to push realtime events over WebSocket.
     """
 
-    def __init__(self, location_service, event_callback=None) -> None:
+    def __init__(self, location_service, event_callback=None, recovery_callback=None) -> None:
         self.location_service = location_service
+        self._recovery_callback = recovery_callback
         self.state: SimulationState = SimulationState.IDLE
         self.current_position: Coordinate | None = None
         self.event_callback = event_callback
@@ -604,6 +605,11 @@ class SimulationEngine:
         self._stop_event.set()
         self._pause_event.set()  # unblock if paused
 
+        for name in ('_native_resume_task', '_native_follow_task'):
+            task = getattr(self, name, None)
+            if task is not None and task is not asyncio.current_task() and not task.done():
+                task.cancel()
+
         # Stop joystick if active
         if self._joystick.is_active:
             await self._joystick.stop()
@@ -766,7 +772,12 @@ class SimulationEngine:
 
     async def _set_position(self, lat: float, lng: float) -> None:
         """Push a coordinate to the device and update internal state."""
-        await self.location_service.set(lat, lng)
+        from services.location_service import DeviceLostError
+        try:
+            await self.location_service.set(lat, lng)
+        except (DeviceLostError, OSError, EOFError, asyncio.TimeoutError):
+            if self._recovery_callback is None or not await self._recovery_callback(lat, lng):
+                raise
         self.current_position = Coordinate(lat=lat, lng=lng)
 
     def apply_speed(

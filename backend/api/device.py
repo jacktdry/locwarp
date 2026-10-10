@@ -1,7 +1,7 @@
 import sys
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 
 from models.schemas import DeviceInfo
 
@@ -17,6 +17,50 @@ def _dm():
 async def list_devices():
     dm = _dm()
     return await dm.discover_devices()
+
+
+class AutoConnectRequest(BaseModel):
+    enabled: StrictBool
+
+
+@router.get("/auto-connect")
+async def auto_connect_settings():
+    from main import app_state
+    return {"approved_udids": list(app_state._auto_connect_udids), "max_devices": 3}
+
+
+@router.get("/{udid}/auto-connect")
+async def auto_connect_setting(udid: str):
+    from main import app_state
+    return {"udid": udid, "enabled": udid.lower() in app_state._auto_connect_udids,
+            **await auto_connect_settings()}
+
+
+@router.post("/{udid}/auto-connect")
+async def set_auto_connect_setting(udid: str, req: AutoConnectRequest):
+    from main import app_state, approved_udids
+    validated = approved_udids([udid])
+    if not validated:
+        raise HTTPException(status_code=400, detail="Invalid UDID")
+    key = validated[0]
+    previous = list(app_state._auto_connect_udids)
+    selected = list(previous)
+    if req.enabled and key not in selected:
+        if len(selected) >= 3:
+            raise HTTPException(status_code=409, detail="最多可為 3 台裝置啟用自動連線 / Maximum 3 auto-connect devices")
+        selected.append(key)
+    elif not req.enabled:
+        selected = [u for u in selected if u != key]
+    app_state._auto_connect_udids = selected
+    if not app_state.save_settings():
+        app_state._auto_connect_udids = previous
+        raise HTTPException(status_code=500, detail="Unable to save auto-connect settings")
+    try:
+        from api.websocket import broadcast
+        await broadcast('auto_connect_settings', await auto_connect_settings())
+    except Exception:
+        pass
+    return await auto_connect_setting(key)
 
 
 # /wifi/connect (legacy direct-IP WiFi for iOS <17) removed in v0.1.49.
@@ -1494,6 +1538,7 @@ async def connect_device(udid: str):
     from main import app_state
     from core.device_manager import UnsupportedIosVersionError
     dm = _dm()
+    udid = dm.canonical_udid(udid)
     # A DVT/engine init failure must not leave a newly opened tunnel looking
     # connected in the sidebar on the next scan. Existing sessions are retained.
     is_new_connection = udid not in dm._connections
@@ -1504,7 +1549,8 @@ async def connect_device(udid: str):
             detail={"code": "max_devices_reached", "message": f"已連接最多 {MAX_DEVICES} 台裝置"},
         )
     try:
-        await dm.connect(udid)
+        await dm.connect(udid, user_initiated=True)
+        udid = dm.canonical_udid(udid)
         await app_state.create_engine_for_device(udid)
         try:
             from api.websocket import broadcast
@@ -1550,6 +1596,15 @@ async def connect_device(udid: str):
 async def disconnect_device(udid: str):
     from main import app_state
     dm = _dm()
+    udid = dm.canonical_udid(udid)
+    udid = next((u for u in app_state.simulation_engines if u.lower() == udid.lower()), udid)
+
+    dm.mark_user_disconnected(udid)
+    engine = app_state.simulation_engines.get(udid)
+    for name in ('_native_resume_task', '_native_follow_task'):
+        task = getattr(engine, name, None)
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
 
     # WiFi devices: a bare dm.disconnect() closes the RSD but leaves the
     # tunnel runner + its watchdog armed. The watchdog then sees the socket
@@ -1561,6 +1616,21 @@ async def disconnect_device(udid: str):
     # click disconnect on one device dropped all of them).
     conn = dm._connections.get(udid)
     is_network = conn is not None and getattr(conn, "connection_type", "") == "Network"
+    native = dm.is_native_wifi(udid) or udid.lower() in dm._native_recoveries
+    if native:
+        # Native RSD handles belong to DeviceManager, never to TunnelRunner.
+        cleaned = await _cleanup_wifi_connection_for(udid, caller="user_disconnect")
+        if not cleaned:
+            await dm.disconnect(udid)
+            app_state.simulation_engines.pop(udid, None)
+            if app_state._primary_udid == udid:
+                app_state._primary_udid = next(iter(app_state.simulation_engines), None)
+        try:
+            from api.websocket import broadcast
+            await broadcast("device_disconnected", {"udid": udid, "udids": [udid], "reason": "user"})
+        except Exception:
+            pass
+        return {"status": "disconnected", "udid": udid}
     has_tunnel = udid in _tunnels
     if is_network or has_tunnel:
         async with _tunnels_lock:

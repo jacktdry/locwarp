@@ -308,3 +308,44 @@ endpoint is restricted to the local Mac by the existing LAN access guard.
 This fixes the renderer lifetime only; restarting the backend itself does
 not preserve an in-progress simulation. New installed-App testing is deferred
 until the user's ongoing route has completed to avoid interrupting GPS.
+
+
+## Pending next prerelease — approved-device automatic connection
+
+Unreleased work on `feature/macos-connection-resilience`; this does not
+change the verification claims for released `v0.2.200-macos.1`.
+
+On macOS, each discovered USB or Wi-Fi device has an **Auto-connect** toggle,
+including disconnected candidates. Before unplugging USB for Wi-Fi fallback,
+pair in Finder and enable **Show this iPhone when on Wi-Fi**. Only explicitly selected UDIDs (maximum
+three) are persisted as `auto_connect_udids` in `~/.locwarp/settings.json`.
+Discovery and manual connection do not approve devices automatically. The
+loopback-only settings API is `GET /api/device/auto-connect`, plus
+`GET` / `POST /api/device/{udid}/auto-connect` (`{"enabled": true|false}`).
+
+The backend starts serving before device discovery and supervises selected
+paired devices while the window is closed. Shared discovery is paced at ten
+seconds; each device has bounded connection/service attempts and failure
+backoff from five seconds up to five minutes. Native records must have a
+live advertisement or a matching Network entry in usbmux before an attempt;
+the native handshake must still prove reachability. USB remains preferred
+when attached. After normal USB unplug teardown, only opted-in devices can
+fall back to reachable native Wi-Fi. Manual disconnect suppresses reconnect
+for that process session until explicit connection; toggling Auto-connect
+or scanning does not clear it. Existing Windows saved-IP pins are separate.
+
+No Windows TUN runner, root permission, new pairing prompt, or periodic GPS
+probe is used by the native supervisor. Group synchronization may reapply
+the primary's user-selected position after a successful connection.
+Physical UAT remains pending: two/three iPhones, offline return, USB-to-Wi-Fi
+handoff, manual suppression, pin persistence, and closed-window operation.
+
+
+Pending next prerelease USB transport note: pymobiledevice3 11.26.0 permits
+one process-wide userspace RSD tunnel. The first USB iOS 17+ connection keeps
+the tested PreferredRsdTunnel path; another USB uses a bounded no-root native
+attempt while that userspace context is owned (including during handshake).
+Native failure leaves existing phones connected and uses existing USB retry
+backoff. iOS 16 legacy clients and native Wi-Fi handles do not occupy the
+userspace slot. No privileged TUN fallback is started. Multiple USB phones
+and mixed USB/Wi-Fi transport behavior remain pending physical UAT.
