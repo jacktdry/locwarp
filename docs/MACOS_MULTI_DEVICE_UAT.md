@@ -33,12 +33,26 @@ RSS 首末 36.8→39.3 MB（期間有短暫波動）、描述符 18→18，
 終止程序；確認 8777 listener 消失、`~/.locwarp/settings.json` 與事前備份
 SHA-256 相同、正式安裝 App 未被取代。這次沒有發佈或推送。
 
-**發現的安全缺口（待程式修正後才能做手動斷線 UAT）：**
-`DeviceManager._close_connection_handles()` 只要存在 `location_service` 就
-呼叫 `location_service.clear()`，即使該引擎從未設定虛擬位置。
-這會讓原本「純連線、不寫 GPS」的手動斷線或正常 shutdown 產生 GPS 清除指令。
-應在未模擬狀態下避免該呼叫，補寫回歸測試後再重建驗收版；此次未執行
-API DELETE／正常 shutdown，防止向兩台手機送出任何定位清除指令。
+**先前清理風險的複查結論（2026-10-10）：**
+`DeviceManager._close_connection_handles()` 確實會呼叫
+`location_service.clear()`，但 `DvtLocationService.clear()` 和
+`LegacyLocationService.clear()` 都會先檢查 `_active`；從未開始模擬時
+直接返回，不會初始化 DVT instrument 或傳送 GPS 清除指令。
+已新增 `backend/tests/test_idle_location_cleanup.py`，以完全模擬傳輸驗證
+閒置 DVT、已初始化但閒置 DVT、閒置 Legacy 都不會呼叫底層 GPS `clear()`，
+且曾啟動模擬的 DVT 仍能正常清除，4/4 測試通過。**原先認為所有斷線都會
+送出 GPS 清除指令是錯誤判斷，已更正；無需變更現有定位清理邏輯。**
+本次 Wi-Fi 持續觀察仍未執行實機手動斷線或正常 shutdown，這兩項
+仍屬 NOT RUN，不能以模擬測試代替實機結果。
+
+**B 的 USB/DDI 後續確認（2026-10-10）：**
+更換 USB-C 資料線後，`pymobiledevice3.usbmux` 已將 B（zih）列為 `USB`；
+Xcode `devicectl device info ddiServices` 回報內容相容且可用，
+`pymobiledevice3 mounter list --udid <B>` 進一步確認 Personalized
+DeveloperDiskImage 的 `IsMounted=true`、`MountPath=/System/Developer`。
+**不需要再下載／重掛 DDI**。先前的 DDI 未掛載是舊 Wi-Fi 工作階段的
+觀察，不能推定目前仍缺失；但仍須在後續 Wi-Fi/USB 實機 GPS UAT
+重新確認 DVT 工作，未獲 GPS 授權不發送定位操作。
 
 ## Read-only 前置與授權界線
 
