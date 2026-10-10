@@ -66,8 +66,34 @@ A 未受到影響，雙引擎仍 Idle、無模擬座標。
 驗收結束前確認兩台仍 Idle、無模擬座標，對已核實的測試後端程序送 SIGTERM
 執行**正常關閉**，程序退出且 8777 listener 已釋放。
 因此「混合連線」、「B 手動斷線抑制」、「B 明確重新連線」、「無模擬定位的正常關閉」
-在本次環境 **PASS**；**USB 實體拔插熱切換、GPS 實際寫入與路線恢復仍 NOT RUN**。
-先前 Wi-Fi-only 工作階段未做的項目並未被追認；本段才是後續獨立驗收結果。
+在本次環境 **PASS**；**截至本階段**，USB 實體拔插熱切換、GPS 實際寫入與
+路線恢復仍 NOT RUN。先前 Wi-Fi-only 工作階段未做的項目並未被追認；
+實體拔線自動接續的後續驗收結果另見下段。
+
+**B USB → Wi-Fi 實際拔線自動接續（2026-10-10，PASS，無 GPS 操作）：**
+原本的測試組合為 A（Wei's iPhone）Network Wi-Fi、B（zih）USB，皆已連線，
+兩個 simulation engine 均 Idle、`current_position=None`。僅透過
+`/api/device/{B}/auto-connect` 將 **B 單獨核准**；A 未加入核准清單。
+先備份 `~/.locwarp/settings.json` 至權限 0600 的暫存檔，
+並確認 B 有已認證且正在廣播的 macOS native Wi-Fi 配對記錄。
+
+使用者實際拔除 **B 的 USB-C 資料線**，觀察得到：USB 通道約
+**12:34:42** 關閉，USB watchdog 約 **12:34:44** 清除 B 的舊連線，
+約 **12:34:55** 透過 macOS NativeRemotedTunnel 重新建立 B 的 Wi-Fi 連線，
+從原 USB 中斷至成功約 **13 秒**（觀測精度受記錄時間與輪詢影響）。
+期間 A 一直維持 Network 已連線；B 的 `is_connected` 曾短暫為 false，
+隨後變為 true、connection_type=Network；兩個引擎回到 Idle、未設定模擬位置。
+驗收監測器在 B 恢復後連續五次確認雙裝置在線，並滿足至少 25 秒的
+恢復後穩定條件，結果 **PASS**。監測紀錄僅留在本機
+`/tmp/locwarp-uat-usb-wifi-handoff-20261010.jsonl`（不提交裝置 UDID）。
+
+測試後已停用 B 的自動連線，確認核准清單為空，
+`~/.locwarp/settings.json` 與測試前備份 SHA-256 完全相符。
+在全部引擎 Idle、無模擬位置時正常 SIGTERM 結束僅供驗收的後端，
+驗證程序已退出且 8777 已釋放；既有正式安裝 App 不受影響。
+此結果只驗證 **Idle 狀態的 USB → Wi-Fi 自動接續**：
+GPS 寫入中途的 route/snapshot 精準接續、手機睡眠及重新插 USB 的反向
+Wi-Fi → USB 優先切換仍為 **NOT RUN**，不能宣稱已通過。
 
 ## Read-only 前置與授權界線
 
