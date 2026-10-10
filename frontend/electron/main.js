@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, shell, ipcMain, dialog } = require('electron')
+const { app, BrowserWindow, Menu, shell, ipcMain, dialog, powerSaveBlocker } = require('electron')
 const path = require('path')
 const { spawn } = require('child_process')
 const http = require('http')
@@ -261,6 +261,31 @@ Menu.setApplicationMenu(menuTemplate ? Menu.buildFromTemplate(menuTemplate) : nu
 
 let mainWindow
 let backendProc = null
+let macIdleSleepBlockerId = null
+
+// Location simulation continues after Cmd+W on macOS. Keep the machine
+// awake for the lifetime of the app (including when its window is closed),
+// without forcing the display to stay on. Unlike prevent-display-sleep,
+// prevent-app-suspension allows normal screen blanking and locking.
+function preventMacIdleSleep() {
+  if (process.platform !== 'darwin' || macIdleSleepBlockerId !== null) return
+  try {
+    macIdleSleepBlockerId = powerSaveBlocker.start('prevent-app-suspension')
+  } catch (error) {
+    console.error('[electron] unable to prevent macOS idle sleep:', error)
+  }
+}
+
+function releaseMacIdleSleep() {
+  if (macIdleSleepBlockerId === null) return
+  const id = macIdleSleepBlockerId
+  macIdleSleepBlockerId = null
+  try {
+    powerSaveBlocker.stop(id)
+  } catch (error) {
+    console.error('[electron] unable to release macOS idle sleep blocker:', error)
+  }
+}
 
 function resolveBackendExe() {
   return backendExecutable(process.resourcesPath, process.platform, app.isPackaged)
@@ -472,7 +497,10 @@ async function createWindow() {
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
-  app.whenReady().then(createWindow)
+  app.whenReady().then(() => {
+    preventMacIdleSleep()
+    return createWindow()
+  })
   app.on('second-instance', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
     else {
@@ -485,5 +513,8 @@ if (!app.requestSingleInstanceLock()) {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
-app.on('before-quit', stopBackend)
+app.on('before-quit', () => {
+  releaseMacIdleSleep()
+  stopBackend()
+})
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })

@@ -81,6 +81,29 @@ clicking the Dock icon reopens a window without starting a second backend.
 Do not start a second backend on port 8777 or kill an unrelated listener.
 Stop your development backend with Ctrl+C before opening the packaged app.
 
+### Keep macOS awake while LocWarp runs
+
+On macOS, the Electron main process starts a `powerSaveBlocker` with
+`prevent-app-suspension` after Electron is ready. This prevents **automatic
+idle system sleep** while LocWarp is running, but **allows the screen to turn
+off or lock**. It does not use `prevent-display-sleep`, and does not override
+manual sleep or closing a laptop lid. This applies to development and packaged
+Electron apps.
+
+The assertion intentionally **survives Cmd+W and reopening from the Dock**:
+the backend and any active simulation remain alive without a window.
+**Cmd+Q releases the assertion** and shuts down the owned backend. LocWarp
+running in the background will therefore still inhibit idle sleep; Quit the
+app when finished to restore the normal idle-sleep policy.
+
+Full Mac system sleep / wake route restoration is outside this version's
+supported use case. The Electron lifecycle tests verify blocker acquisition,
+non-duplication during Dock activation, and release on Quit; actual GUI/power
+assertion integration remains a separate check and does not require putting
+the user's Mac to sleep.
+
+Reference: [Electron `powerSaveBlocker`](https://www.electronjs.org/docs/latest/api/power-save-blocker/).
+
 ## Build on Apple Silicon (ARM64 macOS / Python)
 
 ```bash
