@@ -349,6 +349,67 @@ class DeviceManager:
             finally:
                 self._connection_reservations.discard(key)
 
+    async def upgrade_native_wifi_to_usb(
+        self, udid: str, *, allowed, on_swapped
+    ) -> bool:
+        """Replace an idle native Wi-Fi connection with a verified USB one.
+
+        Create and probe USB *before* publishing it, keeping Wi-Fi usable if
+        USB handshake/DDI fails.  The caller checks that its engine is truly
+        idle (no active or retained simulated position); an active simulation
+        must never be cleared or recreated just because a cable was plugged.
+        ``on_swapped`` atomically updates the app's engine, with rollback if
+        that update fails.  No sibling connections or engines are touched.
+        """
+        key = udid.lower()
+        generation = self._disconnect_generations.get(key, 0)
+        async with self._connection_lock(udid):
+            existing_udid = self.canonical_udid(udid)
+            old = self._connections.get(existing_udid)
+            if (old is None or old.connection_type != 'Network'
+                    or generation != self._disconnect_generations.get(key, 0)
+                    or not self.auto_connect_allowed(udid) or not allowed()):
+                return False
+
+            candidate = None
+            published = False
+            try:
+                candidate = await self._open_connection(existing_udid)
+                if candidate.connection_type != 'USB':
+                    return False
+                # A device with no usable DVT must not replace a working
+                # Wi-Fi connection. Strict preparation writes no GPS data.
+                if _parse_ios_version(candidate.ios_version) >= (17, 0):
+                    candidate.location_service = await self._create_dvt_location_service(
+                        candidate, strict=True
+                    )
+                else:
+                    candidate.location_service = await self._create_legacy_location_service(candidate)
+                if (self._connections.get(existing_udid) is not old
+                        or generation != self._disconnect_generations.get(key, 0)
+                        or not self.auto_connect_allowed(udid) or not allowed()):
+                    return False
+
+                self._connections[existing_udid] = candidate
+                try:
+                    await on_swapped(existing_udid)
+                except BaseException:
+                    self._connections[existing_udid] = old
+                    raise
+                published = True
+            finally:
+                if candidate is not None and not published:
+                    await self._close_connection(candidate)
+
+            # The old service is inactive by the caller's safety guard.
+            # Its teardown must not tear down the already published USB link.
+            try:
+                await self._close_connection(old)
+            except Exception:
+                logger.exception('Failed to close superseded Wi-Fi for %s', existing_udid)
+            logger.info('Upgraded idle native Wi-Fi device %s to verified USB', existing_udid)
+            return True
+
     async def _open_connection(self, udid: str, *, native_record: dict | None = None,
                                require_native_record: bool = False) -> _ActiveConnection:
         conn = None

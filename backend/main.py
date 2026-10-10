@@ -733,7 +733,11 @@ async def _usbmux_presence_watchdog():
             now = time.monotonic()
             for udid in new_udids:
                 if len(dm._connections) >= MAX_DEVICES:
-                    break
+                    # A connected Network device still occupies one slot,
+                    # so it can be upgraded to USB at the three-device cap.
+                    if not (dm.canonical_udid(udid) in dm._connections
+                            and dm.get_connection_type(udid) == 'Network'):
+                        break
                 fail_count = reconnect_failure_count.get(udid, 0)
                 # 5s, 10s, 20s, 40s, 80s, 160s, 300s, 300s ...
                 cooldown = min(
@@ -744,6 +748,58 @@ async def _usbmux_presence_watchdog():
                 if now - last < cooldown:
                     continue
                 last_reconnect_attempt[udid] = now
+                current_udid = dm.canonical_udid(udid)
+                current_conn = dm._connections.get(current_udid)
+                if current_conn is not None and current_conn.connection_type == 'Network':
+                    # Replugging a USB cable must not destroy a running route
+                    # or silently reset an active virtual position. Only an
+                    # explicitly opted-in *truly idle* macOS device may switch.
+                    from models.schemas import SimulationState
+                    def safe_idle():
+                        engine = app_state.simulation_engines.get(current_udid)
+                        active = dm._connections.get(current_udid)
+                        return (sys.platform == 'darwin'
+                                and current_udid.lower() in app_state._auto_connect_udids
+                                and dm.auto_connect_allowed(current_udid)
+                                and active is current_conn
+                                and engine is not None
+                                and engine.state == SimulationState.IDLE
+                                and engine.current_position is None
+                                and getattr(engine, '_active_task', None) is None
+                                and not getattr(engine.location_service, '_active', False))
+
+                    if not safe_idle():
+                        continue
+
+                    async def replace_idle_engine(canonical_udid: str):
+                        await app_state.create_engine_for_device(canonical_udid, replace=True)
+
+                    try:
+                        switched = await dm.upgrade_native_wifi_to_usb(
+                            current_udid, allowed=safe_idle,
+                            on_swapped=replace_idle_engine,
+                        )
+                        if switched:
+                            logger.info('USB priority: upgraded native Wi-Fi %s to USB', current_udid)
+                            try:
+                                await broadcast('device_connected', {
+                                    'udid': current_udid, 'name': dm._connections[current_udid].name,
+                                    'ios_version': dm._connections[current_udid].ios_version,
+                                    'connection_type': 'USB',
+                                })
+                            except Exception:
+                                logger.exception('USB upgraded but UI broadcast failed for %s', current_udid)
+                            last_reconnect_attempt.pop(udid, None)
+                            reconnect_failure_count.pop(udid, None)
+                        else:
+                            # The cable disappeared during negotiation; no
+                            # success is broadcast and old Wi-Fi stays live.
+                            reconnect_failure_count[udid] = fail_count + 1
+                    except Exception:
+                        reconnect_failure_count[udid] = fail_count + 1
+                        logger.warning('USB upgrade failed for %s; keeping existing Wi-Fi',
+                                       current_udid, exc_info=fail_count < 3)
+                    continue
                 logger.info(
                     "usbmux watchdog: new USB device %s detected, auto-connecting (fail_count=%d, cooldown=%.0fs)",
                     udid, fail_count, cooldown,

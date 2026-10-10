@@ -140,6 +140,23 @@ Auto-connect 核准清單，A 從 native Wi-Fi 加入，成為 B 的位置 follo
 **手機睡眠／喚醒、Wi-Fi → USB 反向切換、第三／第四台裝置，及正式版 GUI
 仍 NOT RUN**，不可將此案例擴大為整個 milestone 完成。
 
+**Wi-Fi → USB 優先切回：待實機 UAT 的守護式修正（2026-10-10）：**
+先前 USB watchdog 對已透過 Network 連線的同一 UDID，在新 USB 出現時
+呼叫 `DeviceManager.connect()`，卻因為該 UDID 已存在而直接返回；原本的
+Network handle 不會轉為 USB，甚至可能誤發 `device_connected: USB`。
+現在 `DeviceManager.upgrade_native_wifi_to_usb()` 先準備並驗證新的 USB
+RSD/DVT，成功後才切換單一裝置的連線／引擎，再釋放舊 Wi-Fi handle；
+USB 握手或引擎重建失敗則保留原 Network，不發假的成功通知。手動斷線
+抑制與 Auto-connect 未核准者不會升級，也不會影響另一台已連線手機。
+**安全限制**：僅 Mac、明確核准 Auto-connect、引擎完全 Idle、沒有保留
+模擬座標且 location service 不處於 active 時才切換。正在導航／循環路線
+或仍有虛擬 GPS 的裝置，**維持原 Wi-Fi，不搶佔 DVT 或清除模擬定位**；
+不宣稱已支援「動態路線中自動 Wi-Fi → USB 無縫熱切換」。
+全模擬回歸測試新增 `backend/tests/test_usb_upgrade.py`，包含成功切換、
+USB/DVT 失敗保留 Wi-Fi、主從隔離、抑制／核准及活動定位守衛，
+此段目前僅為**程式／mock 驗證**，必須重新啟動新版後端並請使用者插入
+實體 USB 資料線，確認 `DeviceManager` 的**實際**連線類型與 DVT 後才能標 PASS。
+
 ## Read-only 前置與授權界線
 
 先只讀確認分支／SHA、待測 App 路徑、簽章驗證紀錄、macOS／iOS 版本、
