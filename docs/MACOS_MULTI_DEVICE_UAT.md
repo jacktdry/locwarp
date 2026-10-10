@@ -7,6 +7,39 @@
 所有案例預設 **NOT RUN**，由負責人安排時間與裝置所有人同意後執行；
 此文件不要求立即操作。ARM64 封裝命令見 [MACOS.md](MACOS.md#獨立-arm64-uat-建置已驗證)。
 
+## 2026-10-10 實機紀錄：Wi-Fi 純連線（部分通過）
+
+本次在 Apple Silicon macOS 27.0.1 上使用隔離驗收後端
+`frontend/release/uat-61e4450/mac-arm64/LocWarp.app/Contents/Resources/backend/locwarp-backend`
+（Git 基線 `9c451d2`），不開 GUI、不進行 teleport／route／GPS 指令。
+兩台已配對的實體 **iPhone 15 Pro、iOS 27.0.1**（匿名 A、B）皆由 Network
+候選完成 macOS native Wi-Fi RSD 與引擎建立，兩個引擎均為 `idle`、
+`current_position=None`。A 的 personalized DDI 已掛載；**B 的 DDI 未掛載**，
+其 GPS/DVT 真正可用性仍 **BLOCKED**，不能僅依連線成功判定 PASS。
+
+第二次啟動的測試後端連續觀察 60 筆、每 10 秒 1 筆（12:05–12:16，
+約 10 分鐘）：**60/60 雙引擎存在、Idle、無虛擬定位；0 筆 API 錯誤／
+逾時；11/11 次裝置清單確認 A、B 同時為已連線 Network**。
+API snapshot 平均 54.9 ms、最長 335.2 ms；CPU 最高 2.4%；
+RSS 首末 36.8→39.3 MB（期間有短暫波動）、描述符 18→18，
+未見持續成長。僅能判定「雙裝置 Wi-Fi **連線註冊與被動 API 觀察** PASS」；
+無 DVT/GPS 寫入驗證、睡眠、拔線、主從恢復或使用者手動斷線測試。
+原始去識別證據僅存測試 Mac 的
+`/tmp/locwarp-wifi-uat-20261010-phase2.jsonl`，未提交任何 UDID／座標。
+
+首次啟動的命令工作階段因**測試工具執行上限**被結束，非可歸因於 LocWarp
+自身的連線崩潰；因此改用延長時限的工作階段重新完成前述連續觀察。
+最後在兩個引擎仍為 Idle、無模擬座標時，僅針對已核實 PID 的驗收後端
+終止程序；確認 8777 listener 消失、`~/.locwarp/settings.json` 與事前備份
+SHA-256 相同、正式安裝 App 未被取代。這次沒有發佈或推送。
+
+**發現的安全缺口（待程式修正後才能做手動斷線 UAT）：**
+`DeviceManager._close_connection_handles()` 只要存在 `location_service` 就
+呼叫 `location_service.clear()`，即使該引擎從未設定虛擬位置。
+這會讓原本「純連線、不寫 GPS」的手動斷線或正常 shutdown 產生 GPS 清除指令。
+應在未模擬狀態下避免該呼叫，補寫回歸測試後再重建驗收版；此次未執行
+API DELETE／正常 shutdown，防止向兩台手機送出任何定位清除指令。
+
 ## Read-only 前置與授權界線
 
 先只讀確認分支／SHA、待測 App 路徑、簽章驗證紀錄、macOS／iOS 版本、
