@@ -6,7 +6,7 @@
 
 **Simulate iPhone and iPad locations over USB or Wi-Fi on macOS.** This is a community-maintained macOS fork of the [original LocWarp](https://github.com/keezxc1223/locwarp), preserving navigation and GPS simulation and adding Apple-native RSD transport and Apple Silicon packaging.
 
-> **Release status: ARM64 pre-release only.** Current Mac builds use **ad-hoc signing, not Apple Developer ID signing or notarization**. Gatekeeper may block installation. Intel Macs are not supported. These testing builds are not Apple-verified.
+> **Release status: macOS ARM64 stable (v0.2.201).** Stable describes software functionality and validation, **not Apple security verification**. This build is **ad-hoc signed, without Apple Developer ID signing or notarization**. Gatekeeper may block installation; Intel Macs are unsupported. Apple has **not** verified this app.
 
 **[macOS Downloads (GitHub Releases)](https://github.com/jacktdry/locwarp-macos/releases)** · [macOS guide](docs/MACOS.md) · [Report an issue](https://github.com/jacktdry/locwarp-macos/issues)
 
@@ -21,11 +21,11 @@
 | Wi-Fi | Apple native RSD, same LAN, paired device | Upstream Wi-Fi tunnel |
 | Android | ❌ Not supported | ❌ Not supported |
 
-**Validated:** iOS 27.0.1 native Wi-Fi on Apple Silicon, two simultaneous iPhone connections and teleportation, DVT location service, ⌘W window close and Dock reopen. Three-device operation, all iOS releases and cross-network iPhone access remain unverified; Intel Macs are out of scope.
+**Validated:** Apple Silicon and iOS 27.0.1 iPhones for USB/Wi-Fi connections, two-device GPS route continuation, Wi-Fi ↔ USB switching, real GPS restoration, Electron window close/reopen and idle-sleep prevention. Active-route GUI restoration was also integration-tested with **synthetic devices**, not live iPhone GPS. Literal ⌘W/⌘Q and Dock clicks have not been performed in hardware UAT. Three-phone setups, all iOS versions and iPad hardware remain incompletely verified; Intel Macs are unsupported.
 
 ## Install and first launch (Apple Silicon)
 
-1. Open the **[v0.2.200-macos.1 Release](https://github.com/jacktdry/locwarp-macos/releases/tag/v0.2.200-macos.1)** and download `LocWarp-0.2.200-macos.1-mac-arm64.dmg`. **Apple Silicon M-series Macs only**; Intel Macs are not supported. Download only from this project's GitHub Releases.
+1. Open the **[v0.2.201 Stable Release](https://github.com/jacktdry/locwarp-macos/releases/tag/v0.2.201)** and download `LocWarp-0.2.201-mac-arm64.dmg`. **Apple Silicon M-series Macs only**; Intel Macs are not supported. Download only from this project's GitHub Releases.
 2. **Double-click the DMG**, then drag **LocWarp.app into Applications**. Open LocWarp from **Finder → Applications**, **not directly from the mounted DMG**.
 3. You may see a macOS warning about an unidentified developer or an app Apple cannot check for malicious software. This is an **ad-hoc signed, non-notarized build**. Only consider an app-specific security exception after checking that the download comes from a trustworthy source and has not been tampered with.
 

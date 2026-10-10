@@ -6,7 +6,7 @@
 
 **在 macOS 透過 USB 或 Wi-Fi 控制 iPhone／iPad 虛擬定位。** 本專案是 [LocWarp 原版](https://github.com/keezxc1223/locwarp) 的 macOS 維護分支；保留既有定位與路線功能，同時加入 Apple 原生 RSD 連線及 Apple Silicon 打包支援。
 
-> **發行狀態：ARM64 測試版。** 目前 macOS 安裝檔僅使用 ad-hoc 簽章，**未經 Apple Developer ID 簽署或公證**，Gatekeeper 可能阻擋執行；Intel Mac 不在支援範圍內。不應把測試版視為已受 Apple 驗證的安全軟體。
+> **發行狀態：macOS ARM64 穩定版（v0.2.201）。** 「穩定版」指功能及測試品質，**不代表 Apple 已驗證安全性**。目前安裝檔僅使用 ad-hoc 簽章，**沒有 Apple Developer ID 簽署或公證**，Gatekeeper 可能阻擋開啟；Intel Mac 不在支援範圍內。
 
 **[下載 macOS 版本（GitHub Releases）](https://github.com/jacktdry/locwarp-macos/releases)** · [macOS 設定與限制](docs/MACOS.md) · [問題回報](https://github.com/jacktdry/locwarp-macos/issues)
 
@@ -21,11 +21,11 @@
 | Wi-Fi | macOS 原生 RSD（同一網路、先完成配對） | 上游 Wi-Fi Tunnel |
 | Android | ❌ 不支援 | ❌ 不支援 |
 
-**已驗證：** Apple Silicon Mac 上 iOS 27.0.1 iPhone Wi-Fi 連線、兩支 iPhone 同時連線與瞬移、DVT 定位服務、⌘W 關閉視窗與 Dock 重新開啟。尚未驗證所有 iOS 版本、三台同時操作或跨網路直接連線；Intel Mac 不在維護範圍內。
+**已驗證：** Apple Silicon Mac 搭配 iOS 27.0.1 iPhone 的 USB／Wi-Fi 連線、雙機 GPS 路線接續、Wi-Fi ↔ USB 傳輸切換、正常 GPS 還原，以及 Electron GUI 視窗關閉／重新開啟與防閒置睡眠。活動路線的 GUI 狀態還原另以兩台**假裝置**整合測試；未實際輸入 ⌘W／⌘Q 或點擊 Dock 圖示，也尚未用真實 GPS 進行動態 GUI 視覺驗收。三台同時操作、所有 iOS 版本與 iPad 尚未完整實測；Intel 不支援。
 
 ## 安裝與首次開啟（Apple Silicon）
 
-1. 前往 **[v0.2.200-macos.1 Release](https://github.com/jacktdry/locwarp-macos/releases/tag/v0.2.200-macos.1)**，下載 `LocWarp-0.2.200-macos.1-mac-arm64.dmg`。**僅支援 M 系列晶片的 Mac**，Intel 不支援；請只從本專案的 GitHub Release 取得檔案。
+1. 前往 **[v0.2.201 Stable Release](https://github.com/jacktdry/locwarp-macos/releases/tag/v0.2.201)**，下載 `LocWarp-0.2.201-mac-arm64.dmg`。**僅支援 M 系列晶片的 Mac**，Intel 不支援；請只從本專案的 GitHub Release 取得檔案。
 2. 在「下載項目」中**連按兩下 DMG**，打開磁碟映像檔，將 **LocWarp.app 拖進「應用程式（Applications）」** 資料夾。之後從 Finder 的「應用程式」開啟 LocWarp，**不要直接從 DMG 執行**。
 3. 第一次開啟可能看到「無法驗證開發者」或「Apple 無法驗證是否含有惡意軟體」等提示。這版採 **ad-hoc 簽章，未經 Apple 公證**。只有在你已確認下載來源可信、檔案未遭竄改時，才考慮下方的單一 App 例外開啟方法。
 
