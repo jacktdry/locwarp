@@ -1,10 +1,11 @@
-# macOS 多裝置與 native Wi-Fi 恢復 UAT（待執行）
+# macOS 多裝置與 native Wi-Fi 恢復 UAT（實機紀錄與待辦）
 
 本文件是 `feature/macos-connection-resilience` 的人工驗收計畫，連線改善基線為
-`61e4450`。2026-10-10 已完成隔離 ARM64 建置、後端 78、Electron 24 項測試、
+`61e4450`。2026-10-10 已完成隔離 ARM64 建置、後端 82、Electron 24 項測試、
 前端 build、封裝後端 self-test 與 ad-hoc 嚴格簽章驗證，
-但不代表多裝置、休眠或 GPS 恢復已通過實機驗收。
-所有案例預設 **NOT RUN**，由負責人安排時間與裝置所有人同意後執行；
+實機通過範圍與剩餘未執行項目以本文件下方逐項紀錄為準，
+不可將部分成功解釋為所有裝置、睡眠與 GPS 恢復均已驗收。
+未另行記錄結果的案例預設 **NOT RUN**，由負責人安排時間與裝置所有人同意後執行；
 此文件不要求立即操作。ARM64 封裝命令見 [MACOS.md](MACOS.md#獨立-arm64-uat-建置已驗證)。
 
 ## 2026-10-10 實機紀錄：Wi-Fi 純連線（部分通過）
@@ -94,6 +95,50 @@ A 未受到影響，雙引擎仍 Idle、無模擬座標。
 此結果只驗證 **Idle 狀態的 USB → Wi-Fi 自動接續**：
 GPS 寫入中途的 route/snapshot 精準接續、手機睡眠及重新插 USB 的反向
 Wi-Fi → USB 優先切換仍為 **NOT RUN**，不能宣稱已通過。
+
+**B 主裝置進行中路線 → A 接手 → B Wi-Fi 回歸（2026-10-10，PASS）：**
+本案例獲兩台 iPhone 的 GPS 模擬測試授權後執行；在 Apple Silicon Mac
+的隔離 ARM64 驗收後端進行，不啟動 GUI、不安裝或覆蓋正式版 App。
+測試前備份 `~/.locwarp/settings.json`（檔案權限 0600），建立 6 分鐘
+失聯逾時安全保護，確保超時可嘗試還原兩台裝置。先讓 B（zih）USB
+成為 primary，透過 `/api/location/teleport` 設定短距離起點，接著以
+`/api/location/loop` 執行**約 30 公尺邊長的 4 點閉合路線、步行 3.2 km/h**；
+觀察到 B 的狀態為 `looping`、行進距離持續增加。僅將 A、B 加入此輪
+Auto-connect 核准清單，A 從 native Wi-Fi 加入，成為 B 的位置 follower。
+拔線前 3 筆同步取樣，A／B 虛擬定位差距皆為 **0 公尺**，B 持續行進。
+
+使用者隨後實際拔除 B 的 USB-C 線。獨立 read-only 監測器記錄到：
+
+- 監測開始後 **24.0 秒**：B USB 裝置消失。
+- **28.6 秒**：primary 轉為 A，A 狀態為 `looping`，B 原引擎已移除；
+  A 自此能繼續移動，而非僅保持原位置。
+- **30.1 秒**：B 暫時未連線，Wi-Fi 候選可見；A 一直維持 Network 已連線。
+- **35.7 秒**：B 經 native Wi-Fi 重新連接，取得模擬位置，開始跟隨 A。
+- B 回歸後連續 **7 筆**雙機連線且有位置的監測取樣，約 **17.3 秒**；
+  A、B 回報模擬位置差距在 **0～0.9 公尺**之間。
+- A 接手後的 `looping` 樣本中，`distance_traveled` 有 **20.4 公尺**的
+  區間變動，證明引擎持續推進。該欄位會於新一圈重置，不能拿
+  首筆與末筆當成單調累積里程；本測試只證實持續移動及主從接續，
+  不宣稱證明每一個細分路段百分之百無跳點。
+- **19 筆**監測紀錄、**0** 讀取異常；原始含裝置 ID／測試座標的觀測檔
+  僅留在本機 `/tmp/locwarp-gps-live-handoff-20261010.jsonl`，未提交 Git。
+
+**恢復真實 GPS：** 完成觀測後立即對 A、B 分別呼叫
+`POST /api/location/restore?udid=…`，兩者均回應 `restored`，
+引擎變為 `idle`；關閉兩台 Auto-connect 核准後，正常 SIGTERM
+結束已確認身分的驗收後端，8777 listener 釋放。隨後使用 Apple
+`devicectl device simulate location clear --device …` 作第二道獨立復原，
+**兩台均回報 `Cleared location simulation` 且 exit code 0**。
+已解除逾時保護。測試期間僅設定檔的 `last_position` 曾變更，
+核對其他欄位一致後，已將這一項還原為測試前狀態，最終設定檔與
+事前備份 **SHA-256 完全一致**、Auto-connect 核准清單為空。
+
+結果：**本次雙機活動路線主從故障切換／B 回歸位置同步 PASS**。
+限制：無獨立第三方 App 的定位讀值錄影，精細路段連續性只能依照
+後端 snapshot 與模擬座標比較；雙機 GPS 清除獲 API 與 Apple 原生命令
+雙重成功回報，但未實際拿手機上的地圖 App 人工目視定位點。
+**手機睡眠／喚醒、Wi-Fi → USB 反向切換、第三／第四台裝置，及正式版 GUI
+仍 NOT RUN**，不可將此案例擴大為整個 milestone 完成。
 
 ## Read-only 前置與授權界線
 
