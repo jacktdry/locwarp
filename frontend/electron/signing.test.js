@@ -1,6 +1,6 @@
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
-const { signingPlan, builderArgs } = require('../build/package-macos')
+const { signingPlan, builderArgs, outputDirectory } = require('../build/package-macos')
 
 test('direct signing preserves valid backend code, seals outer app last and verifies', () => {
   const fs = require('fs'), path = require('path'), os = require('os')
@@ -65,4 +65,66 @@ test('v26 archive targets immediately follow --mac when using prepackaged app', 
     ['--mac', 'dmg', 'zip', '--prepackaged', app, '--arm64', '--publish', 'never', ...plan.args])
   assert.deepEqual(builderArgs('x64', plan, ['--dir']).slice(0, 5),
     ['--mac', '--dir', '--x64', '--publish', 'never'])
+})
+
+test('default output preserves the existing builder argv and app path', () => {
+  const path = require('path')
+  const plan = signingPlan({})
+  assert.equal(outputDirectory({}), 'release')
+  assert.equal(path.join('/frontend', plan.output, 'mac-arm64', 'LocWarp.app'),
+    '/frontend/release/mac-arm64/LocWarp.app')
+  assert.deepEqual(builderArgs('arm64', plan, ['--dir']), [
+    '--mac', '--dir', '--arm64', '--publish', 'never',
+    '--config.mac.identity=null', '--config.mac.hardenedRuntime=false',
+    '--config.mac.notarize=false', '--config.forceCodeSigning=false', '--config.compression=store'
+  ])
+})
+
+test('isolated output parses with the installed builder CLI for dir and prepackaged stages', () => {
+  const path = require('path')
+  const { configureBuildCommand } = require('electron-builder/out/builder')
+  for (const env of [
+    { LOCWARP_MAC_OUTPUT_SUBDIR: 'UAT_arm64-01' },
+    { LOCWARP_MAC_OUTPUT_SUBDIR: 'UAT_arm64-01', LOCWARP_MAC_SIGNING: 'developer-id',
+      LOCWARP_MAC_SIGNING_IDENTITY: 'Developer ID Application: Example (TEAM)', APPLE_KEYCHAIN_PROFILE: 'release' }
+  ]) {
+    const plan = signingPlan(env)
+    const app = path.join('/frontend', plan.output, 'mac-arm64', 'LocWarp.app')
+    assert.equal(app, '/frontend/release/UAT_arm64-01/mac-arm64/LocWarp.app')
+    for (const targets of [['--dir'], ['dmg', 'zip', '--prepackaged', app]]) {
+      const argv = builderArgs('arm64', plan, targets)
+      assert.equal(argv.at(-1), '--config.directories.output=release/UAT_arm64-01')
+      const parsed = configureBuildCommand(require('yargs/yargs')(argv)).exitProcess(false).parse()
+      assert.equal(parsed.config.directories.output, 'release/UAT_arm64-01')
+      assert.equal(parsed.arm64, true)
+      assert.equal(parsed.publish, 'never')
+      assert.deepEqual(parsed._, [])
+      if (targets[0] === '--dir') {
+        assert.equal(parsed.dir, true)
+        assert.deepEqual(parsed.mac, [])
+        assert.equal(parsed.prepackaged, undefined)
+      } else {
+        assert.deepEqual(parsed.mac, ['dmg', 'zip'])
+        assert.equal(parsed.prepackaged, app)
+      }
+    }
+  }
+})
+
+test('output subdir rejects empty, traversal and non-ASCII input before building', () => {
+  for (const subdir of ['', '.', '..', '../uat', 'uat/child', '/uat', 'uat\\child',
+    'uat.v1', 'uat space', '驗收', 'uat\n', 'uat\r', 'uat\0', 'uat\t', 'uat=other']) {
+    const env = { LOCWARP_MAC_OUTPUT_SUBDIR: subdir }
+    assert.throws(() => signingPlan(env), /LOCWARP_MAC_OUTPUT_SUBDIR/)
+    // NUL cannot be passed in an OS environment; the function still rejects it.
+    if (subdir.includes('\0')) continue
+    const result = require('child_process').spawnSync(process.execPath,
+      [require.resolve('../build/package-macos'), '--check'],
+      { env: { ...process.env, ...env, LOCWARP_MAC_SIGNING: 'local' }, encoding: 'utf8', timeout: 10000 })
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /LOCWARP_MAC_OUTPUT_SUBDIR/)
+  }
+  for (const subdir of ['a', '0', '_', '-', 'uat_01-ARM64']) {
+    assert.equal(outputDirectory({ LOCWARP_MAC_OUTPUT_SUBDIR: subdir }), `release/${subdir}`)
+  }
 })

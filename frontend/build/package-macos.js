@@ -2,7 +2,18 @@ const { spawnSync } = require('child_process')
 const path = require('path')
 const { signLocalApp } = require('./sign-local-app')
 
+function outputDirectory(env) {
+  const subdir = env.LOCWARP_MAC_OUTPUT_SUBDIR
+  if (subdir === undefined) return 'release'
+  if (typeof subdir !== 'string' || !subdir || /[^A-Za-z0-9_-]/.test(subdir)) {
+    throw new Error('LOCWARP_MAC_OUTPUT_SUBDIR must be a non-empty single directory using ASCII letters, digits, underscores or hyphens')
+  }
+  return `release/${subdir}`
+}
+
 function signingPlan(env) {
+  const output = outputDirectory(env)
+  const outputArgs = output === 'release' ? [] : [`--config.directories.output=${output}`]
   const mode = env.LOCWARP_MAC_SIGNING || 'local'
   const childEnv = { ...env }
   if (mode === 'local') {
@@ -12,7 +23,7 @@ function signingPlan(env) {
       if (key.startsWith('CSC_') || key.startsWith('APPLE_')) delete childEnv[key]
     }
     childEnv.CSC_IDENTITY_AUTO_DISCOVERY = 'false'
-    return { env: childEnv, args: ['--config.mac.identity=null', '--config.mac.hardenedRuntime=false', '--config.mac.notarize=false', '--config.forceCodeSigning=false', '--config.compression=store'] }
+    return { env: childEnv, output, args: ['--config.mac.identity=null', '--config.mac.hardenedRuntime=false', '--config.mac.notarize=false', '--config.forceCodeSigning=false', '--config.compression=store', ...outputArgs] }
   }
   if (mode !== 'developer-id') throw new Error('LOCWARP_MAC_SIGNING must be local or developer-id')
   const identity = env.LOCWARP_MAC_SIGNING_IDENTITY
@@ -26,7 +37,7 @@ function signingPlan(env) {
   // v26 findIdentity rejects certificate-type prefixes in the qualifier.
   const qualifier = identity.slice('Developer ID Application:'.length).trim()
   if (!qualifier) throw new Error('Specify a Developer ID certificate name and team')
-  return { env: childEnv, args: [`--config.mac.identity=${qualifier}`, '--config.mac.type=distribution', '--config.mac.hardenedRuntime=true', '--config.mac.notarize=true', '--config.forceCodeSigning=true'] }
+  return { env: childEnv, output, args: [`--config.mac.identity=${qualifier}`, '--config.mac.type=distribution', '--config.mac.hardenedRuntime=true', '--config.mac.notarize=true', '--config.forceCodeSigning=true', ...outputArgs] }
 }
 
 // v26 accepts target names only immediately after the --mac array option.
@@ -48,7 +59,7 @@ if (require.main === module) {
       const dirOnly = process.env.LOCWARP_MAC_DIR_ONLY === '1'
       if ((process.env.LOCWARP_MAC_SIGNING || 'local') === 'local') {
         builder(['--dir'])
-        const app = path.join(project, 'release', arch === 'arm64' ? 'mac-arm64' : 'mac', 'LocWarp.app')
+        const app = path.join(project, plan.output, arch === 'arm64' ? 'mac-arm64' : 'mac', 'LocWarp.app')
         signLocalApp(app)
         if (!dirOnly) builder(['dmg', 'zip', '--prepackaged', app])
       } else {
@@ -61,4 +72,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { signingPlan, builderArgs }
+module.exports = { signingPlan, builderArgs, outputDirectory }

@@ -7,6 +7,10 @@ export PYINSTALLER_CONFIG_DIR="$ROOT/build-py/pyinstaller-cache"
 # Default: sealed local ad-hoc app; release mode requires explicit identity
 # and notarization configuration. Validate before installing/building.
 node frontend/build/package-macos.js --check
+OUTPUT_DIR="$ROOT/frontend/release"
+if [[ "${LOCWARP_MAC_OUTPUT_SUBDIR+x}" == x ]]; then
+  OUTPUT_DIR="$OUTPUT_DIR/$LOCWARP_MAC_OUTPUT_SUBDIR"
+fi
 PYTHON="${LOCWARP_PYTHON:-python3.13}"
 ARCH="$("$PYTHON" -c 'import platform, sys; assert sys.version_info[:2] == (3, 13), "Python 3.13 required"; print({"arm64":"arm64", "x86_64":"x64"}[platform.machine()])')"
 [[ "${1:-$ARCH}" == "$ARCH" ]] || { echo "Python architecture is $ARCH; use a matching host/Python for ${1}." >&2; exit 1; }
@@ -34,4 +38,4 @@ npm run build
 node build/package-macos.js "$ARCH"
 APP_DIR=mac
 [[ "$ARCH" != arm64 ]] || APP_DIR=mac-arm64
-codesign --verify --deep --strict "$ROOT/frontend/release/$APP_DIR/LocWarp.app"
+codesign --verify --deep --strict "$OUTPUT_DIR/$APP_DIR/LocWarp.app"

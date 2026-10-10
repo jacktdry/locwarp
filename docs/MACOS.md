@@ -101,6 +101,38 @@ A packaging hook rejects missing/incomplete or
 wrong-architecture backend inputs before producing an app. Outputs are in `frontend/release/`, with the
 architecture in each artifact name. No universal binary is claimed.
 
+### 獨立 ARM64 UAT 建置（已驗證）
+
+2026-10-10 已在 Apple Silicon 完成一次隔離的 ARM64 全流程建置：
+`LOCWARP_MAC_OUTPUT_SUBDIR=uat-61e4450` 且 `LOCWARP_MAC_DIR_ONLY=1`，
+後端 78、Electron 24 項測試、frozen backend `--self-test`、前端 build、
+App/後端 ARM64 架構及 `codesign --verify --deep --strict` 均通過。
+產物位於 `frontend/release/uat-61e4450/mac-arm64/LocWarp.app`，未啟動驗收 App，
+**不代表雙 iPhone 實機驗收已通過**。以下為可重現的建置命令；
+先依上述流程準備相符的 ARM64 環境，不要與其他建置同時執行。
+
+```bash
+# Repository root: full pipeline, including PyInstaller; does not launch Electron.
+LOCWARP_MAC_OUTPUT_SUBDIR=uat-arm64 LOCWARP_MAC_DIR_ONLY=1 bash build-macos.sh arm64
+# Or package only, after matching backend/frontend inputs have already been built:
+(cd frontend && LOCWARP_MAC_OUTPUT_SUBDIR=uat-arm64 LOCWARP_MAC_DIR_ONLY=1 npm run dist:mac -- --arm64)
+codesign --verify --deep --strict frontend/release/uat-arm64/mac-arm64/LocWarp.app
+```
+
+`LOCWARP_MAC_OUTPUT_SUBDIR` 只允許非空的單層 ASCII 英數、底線、連字號；
+不可含點、斜線、反斜線或空白。未設定時仍使用 `frontend/release/`，
+預設 App 為 `frontend/release/mac-arm64/LocWarp.app`。
+設定後兩次 electron-builder 階段及簽章／驗證均使用 `release/<subdir>/`；
+搭配 `LOCWARP_MAC_DIR_ONLY=1` 只產生 unpacked App，不產生或覆寫歷史 DMG／ZIP。
+重用同一 subdir 會重建該目錄內的 App，需保留的驗收產物請用不同名稱。
+此隔離僅限封裝輸出：前端、PyInstaller 中間產物與 `~/.locwarp/` 執行資料仍共享。
+
+不修改 `appId=com.locwarp.app` 或 `productName=LocWarp`。
+正式版與驗收版具有相同 bundle ID、共享資料及連接埠 8777，**不可同時啟動**；
+不要複製到或覆寫 `/Applications/LocWarp.app`。
+雙 iPhone 及恢復流程請見 [macOS 多裝置 UAT](MACOS_MULTI_DEVICE_UAT.md)，
+被動觀察與 GPS／路線／群組同步須分別取得同意，建置通過不代表實機通過。
+
 ### Local ad-hoc signing (default)
 
 `bash build-macos.sh arm64` and `npm run dist:mac -- --arm64` default to
