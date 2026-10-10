@@ -54,6 +54,21 @@ DeveloperDiskImage 的 `IsMounted=true`、`MountPath=/System/Developer`。
 觀察，不能推定目前仍缺失；但仍須在後續 Wi-Fi/USB 實機 GPS UAT
 重新確認 DVT 工作，未獲 GPS 授權不發送定位操作。
 
+**B USB + A Wi-Fi 混合連線實機驗收（2026-10-10，無 GPS 操作）：**
+使用同一隔離 ARM64 驗收後端（來源 baseline `9c451d2`；其後僅增加回歸測試與文件）。
+USB watchdog 偵測 B 並建立 USB 連線；隨後由 `/api/device/{udid}/connect`
+明確連接 A 的 Network 原生 Wi-Fi 通道。兩台 iPhone 15 Pro 同時連線，
+兩個 simulation engine 均為 Idle、`current_position=None`，此混合連線案例 **PASS**。
+手動 `DELETE /api/device/{B}/connect` 成功（約 0.04 秒），A 維持已連線且
+為唯一存活引擎；在其後 2 秒、再過 6 秒各一次觀察，B 均保持手動斷線抑制，
+A 持續連線。再明確 `POST /api/device/{B}/connect`，B 約 3.1 秒恢復 USB，
+A 未受到影響，雙引擎仍 Idle、無模擬座標。
+驗收結束前確認兩台仍 Idle、無模擬座標，對已核實的測試後端程序送 SIGTERM
+執行**正常關閉**，程序退出且 8777 listener 已釋放。
+因此「混合連線」、「B 手動斷線抑制」、「B 明確重新連線」、「無模擬定位的正常關閉」
+在本次環境 **PASS**；**USB 實體拔插熱切換、GPS 實際寫入與路線恢復仍 NOT RUN**。
+先前 Wi-Fi-only 工作階段未做的項目並未被追認；本段才是後續獨立驗收結果。
+
 ## Read-only 前置與授權界線
 
 先只讀確認分支／SHA、待測 App 路徑、簽章驗證紀錄、macOS／iOS 版本、
