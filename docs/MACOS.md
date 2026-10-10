@@ -1,10 +1,20 @@
 # macOS development and releases
 
-This fork adds a native macOS packaging/startup path for Apple Silicon
-(`arm64`) and Intel (`x64`). Windows NSIS, administrator startup and
-Windows Location remain available. The upstream compatibility table is
+This fork maintains a native macOS packaging/startup path **only for Apple
+Silicon (`arm64`)**. Intel (`x64`) is **not a supported release target**;
+legacy build switches may remain in the source but will not be maintained or
+published. Windows NSIS, administrator startup and Windows Location remain available in the upstream project. The upstream compatibility table is
 Windows evidence, not macOS device certification. MIT attribution remains
 in `LICENSE` and is copied into packaged resources.
+
+## 安裝、使用和 macOS Gatekeeper / Installation and Gatekeeper
+
+首次使用者請先閱讀 [繁中 README：安裝、強制打開與基本使用](../README.md#安裝與首次開啟apple-silicon)
+或 [English README: install, Open Anyway and basic use](../README.en.md#install-and-first-launch-apple-silicon)。
+Apple 官方提供逐 App 的例外開啟方式：下載可信來源檔案、嘗試啟動後，到
+**系統設定 → 隱私權與安全性 → 安全性 → 強制打開（Open Anyway）**；
+不要全域停用 Gatekeeper、SIP 或移除安全隔離標記。若提示惡意軟體或
+損毀，請停止並先確認來源。參閱 [Apple 官方說明](https://support.apple.com/zh-tw/102445)。
 
 ## 開始使用 / device setup
 
@@ -71,12 +81,11 @@ clicking the Dock icon reopens a window without starting a second backend.
 Do not start a second backend on port 8777 or kill an unrelated listener.
 Stop your development backend with Ctrl+C before opening the packaged app.
 
-## Build each architecture on matching macOS / Python
+## Build on Apple Silicon (ARM64 macOS / Python)
 
 ```bash
 # Run npm ci once before this command (not concurrently).
 bash build-macos.sh arm64    # Apple Silicon with arm64 Python 3.13
-bash build-macos.sh x64      # Intel with x86_64 Python 3.13, on that host
 ```
 
 The script checks Python version/architecture, creates a separate
@@ -85,11 +94,9 @@ hardware-free frozen `--self-test`, generates `icon.icns` from the existing
 artwork, tests/builds the frontend, and packages DMG and ZIP with publishing
 disabled. `LOCWARP_PYTHON=/path/to/python3.13` selects Python.
 `LOCWARP_MAC_DIR_ONLY=1 bash build-macos.sh arm64` produces an unpacked app
-for local packaging checks. PyInstaller does not cross-compile; an arm64
-backend must never be shipped inside an x64 Electron app. The two output
-trees are `dist-py/mac-arm64/locwarp-backend` and
-`dist-py/mac-x64/locwarp-backend`. `npm run dist:mac -- --arm64` (or `--x64`)
-only packages already built inputs and defaults to the Node host architecture.
+for local packaging checks. PyInstaller does not cross-compile; the
+ARM64 backend output is `dist-py/mac-arm64/locwarp-backend`.
+`npm run dist:mac -- --arm64` only packages already built ARM64 inputs.
 A packaging hook rejects missing/incomplete or
 wrong-architecture backend inputs before producing an app. Outputs are in `frontend/release/`, with the
 architecture in each artifact name. No universal binary is claimed.
@@ -137,8 +144,8 @@ spctl --assess --type execute --verbose=4 release/mac-arm64/LocWarp.app
 ```
 
 Use the exact artifact filenames if multiple versions/architectures exist.
-On Intel use `--x64` and `release/mac/LocWarp.app`. These checks do not
-launch Electron, access a phone, or change security permissions.
+Intel (`--x64`) builds are intentionally unsupported and not tested.
+These checks do not launch Electron, access a phone, or change security permissions.
 
 ### Developer ID release (explicit, fail closed)
 
@@ -222,15 +229,16 @@ the installed dependency source is the implementation reference.
 - pymobiledevice3's **USB** userspace transport has a process-wide
   singleton: one userspace iOS 17+ tunnel at a time. On 2026-10-09 the
   owner confirmed **two iPhones connected via native Wi-Fi simultaneously
-  and both teleported successfully** on Apple Silicon. USB/native mixes,
-  three-device combinations and Intel Mac remain unverified. Native remoted
+  and both teleported successfully** on Apple Silicon. USB/native mixes and
+  three-device combinations remain unverified. Intel Mac is unsupported. Native remoted
   can conflict with concurrent Xcode/device tools as noted above.
-- iOS 16 legacy transport is retained; all iPhone operations and Intel
-  binaries still require real-device/host acceptance. Merely building or
+- iOS 16 legacy transport is retained; all iPhone operations still
+  require real-device acceptance. Merely building or
   importing a bundle does not prove GPS simulation works.
-- The existing backend listens on `0.0.0.0:8777` for phone control. Use a
-  trusted LAN and firewall; do not expose this unauthenticated API to the
-  internet. This port does not redesign that network contract.
+- The backend listens on `0.0.0.0:8777` for the optional phone page.
+  Desktop API and WebSocket routes are loopback-only; LAN phone routes
+  require PIN/token auth (except the public phone page). Use trusted Wi-Fi;
+  do not expose port 8777 to the public Internet.
 
 ## macOS window shortcuts
 
@@ -242,13 +250,13 @@ stops its owned backend. Windows app/menu behavior is unchanged.
 ## Safe acceptance checks
 
 Run the focused JS/Python tests and source/frozen `--self-test` first;
-these do not discover or modify attached devices. Inspect both architecture
-bundles with `file`/`lipo -info`, check executable permission and matching
+these do not discover or modify attached devices. Inspect the ARM64 app and backend
+with `file`/`lipo -info`, check executable permission and matching
 Info.plist local-network descriptions. Verify app open, missing-backend
 dialog, Cmd+Q, close/reopen, backend exit and a clean port on an isolated
 machine **with no iPhone attached**. Device acceptance (USB trust, DDI,
 disconnect/reconnect and any intentional GPS simulation) is a separate,
-explicitly supervised activity. Wi-Fi, Intel runtime, Developer ID signing
+explicitly supervised activity. Wi-Fi runtime, Developer ID signing
 and notarization remain separate release gates. In a Mac Wi-Fi UAT, keep
 USB unplugged when launching the app, confirm `Network` + `is_connected`
 from `/api/device/list`, verify a responsive API for at least several
