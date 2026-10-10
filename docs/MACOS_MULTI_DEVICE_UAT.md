@@ -81,7 +81,62 @@ Electron lifecycle／menu 測試涵蓋，不能冒稱已完成真人鍵盤／Doc
 **沒有修改實體手機 GPS 或聲稱已完成活動路線的真實 GUI UAT**。
 本輪沒有操作 Mac 的實際鍵盤快捷鍵或 Dock 圖示：前景為其他應用，
 macOS GUI Accessibility 權限未啟用；為避免干擾使用者，
-仍將真正的 `Cmd+W`、Dock 點擊與動態路線狀態視覺驗收保留待辦。
+仍將真正的 `Cmd+W`、Dock 點擊與真實 iPhone GPS 路線中的視覺驗收保留待辦。
+
+**真正 Electron GUI + 隔離假後端的動態路線整合驗收（2026-10-10，PASS）：**
+為避免重複改寫真實 iPhone GPS，建立僅使用合成裝置 ID 的
+`backend/tests/fixtures/fake_gui_route_backend.py`。它以
+`127.0.0.1:8777` 提供兩台**假手機**、只讀 route snapshot／
+device list，以及 WebSocket 合成座標更新。服務不會匯入 USB、
+`pymobiledevice3` 或 Location Service；**所有 `/api/*` 的
+POST/PUT/PATCH/DELETE 都會回 403 並記錄，不會傳遞給真實手機**。
+服務內 `/_uat/stop-route` 只改變合成資料，不會操作任何裝置。
+
+測試前確認真實 LocWarp 未執行，並啟動此 fixture + `vite`，
+以**獨立的 Electron 驗收 App** 的 `--dev` 模式連到現有前端原始碼。
+CDP 只使用 `127.0.0.1:19231`；隔離 profile 放在 `/tmp`。
+`open -g` 雖指定背景啟動，macOS 一度仍將 LocWarp 切到前景，
+已立即恢復原本 Chrome 視窗；不宣稱全程完全無視窗焦點變化。
+首次載入時 fixture 的 `/api/route/saved` 回傳物件而不是陣列，
+造成測試 GUI 空白；修正**fixture** 回傳格式後，
+GUI 正常載入，不是 LocWarp 後端實機功能失敗。
+
+實際 GUI／CDP 只讀觀察結果：
+
+- 起始 fake A、fake B 都顯示「模擬中」，模式為**多點路徑**，
+  4 個路點、進度／ETA／已行距離皆顯示；Leaflet 有 3 個
+  overlay path、5 個 marker。
+- 在假路線**活動中**呼叫 GUI `window.close()`，CDP page target 由
+  **1 → 0**，同一 Electron 主程序仍存在、防睡眠 assertion 持續；
+  假後端的路線進度繼續增加。重新 `open -g -a` 出現 1 個
+  正常載入的 renderer，兩台仍顯示「模擬中」、4 路點恢復，
+  Leaflet overlay 3 條／marker 5 個；已行距離由 **125 m → 179 m**。
+  循環進度百分比跨圈數而重置，屬 fake 路線正常行為。
+- 再次關閉 GUI，透過 `/_uat/stop-route` 令假路線變成 Idle，
+  之後重新開窗：A、B 均回到「已連線」，工具列顯示「開始」，
+  **0 條路徑 overlay、0 個地圖 marker**，沒有舊執行中狀態殘留。
+- GUI 初始化有數次自動 `PUT /api/geocode/provider-pref`，
+  fixture 一律以 **403 拒絕並記錄**；本次沒有任何實體手機
+  GPS 指令。驗證後系統正常結束測試 Electron、fixture 與 Vite，
+  8777、5173、19231 均已釋放、LocWarp 防睡眠 assertion 消失，
+  Auto-connect 核准數為 0；正式安裝版未更動。
+
+**判定：活動路線 GUI 關窗接續與路線結束後重新開窗的畫面恢復
+在隔離假裝置整合測試中 PASS**。仍不能宣稱兩台真實 iPhone
+活動 GPS 路線的 GUI 畫面已完成同樣驗證。也未實際輸入
+`Cmd+W`／`Cmd+Q` 或用手點 Dock 圖示；待安排方便操作的實機 UAT。
+
+重現方式（必須先結束真實 LocWarp、確認 8777 未被占用）：
+在一個終端以 `.venv/bin/python backend/tests/fixtures/fake_gui_route_backend.py`
+啟動合成後端，另一終端進入 `frontend/` 執行
+`npx vite --host 127.0.0.1 --port 5173 --strictPort`；使用**已有的隔離版**
+Electron App（不是正式安裝版）加上 `--dev`、獨立
+`--user-data-dir=/tmp/locwarp-fakegui-profile-<test-id>` 及 localhost CDP
+偵錯埠啟動，從只讀 DOM 觀察路線。假路線結束用
+`curl http://127.0.0.1:8777/_uat/stop-route`，
+結束時正常退出測試 App 及兩個本機服務。該 fixture 的
+**4 項 API／WebSocket 安全與資料形狀測試**由
+`backend/tests/test_fake_gui_route_backend.py` 執行。
 
 ## 2026-10-10 實機紀錄：Wi-Fi 純連線（部分通過）
 
