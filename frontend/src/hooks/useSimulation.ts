@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import * as api from '../services/api'
 import type { WsMessage } from './useWebSocket'
 import { playCompletionAlert } from '../services/alertSound'
-import { normalizeDeviceSnapshot, selectSnapshotDevice, type BackendSnapshot } from './simulationSnapshot'
+import { normalizeDeviceSnapshot, mergeSnapshotRuntime, selectSnapshotDevice, type BackendSnapshot } from './simulationSnapshot'
 
 export enum SimMode {
   Teleport = 'teleport',
@@ -403,6 +403,7 @@ export function useSimulation(subscribe?: WsSubscribe, primaryUdid?: string | nu
   // the simulation. Position ticks alone do not invalidate the route shape.
   const routeRevision = useRef(0)
   const positionRevision = useRef(0)
+  const devicePositionRevisions = useRef<Record<string, number>>({})
   const updateRuntime = useCallback((udid: string, patch: Partial<DeviceRuntime>) => {
     setRuntimes((prev) => {
       const cur = prev[udid] ?? emptyRuntime(udid)
@@ -437,7 +438,13 @@ export function useSimulation(subscribe?: WsSubscribe, primaryUdid?: string | nu
          'device_disconnected', 'device_connected', 'device_reconnected'].includes(wsMessage.type)) {
       routeRevision.current += 1
     }
-    if (wsMessage.type === 'position_update') positionRevision.current += 1
+    if (wsMessage.type === 'position_update') {
+      positionRevision.current += 1
+      if (wsMessage.data?.udid) {
+        const id = wsMessage.data.udid as string
+        devicePositionRevisions.current[id] = (devicePositionRevisions.current[id] ?? 0) + 1
+      }
+    }
     // ── Group mode: mirror per-device state into `runtimes` map ────────
     const udid: string | undefined = wsMessage.data?.udid
     if (udid) {
@@ -1001,30 +1008,34 @@ export function useSimulation(subscribe?: WsSubscribe, primaryUdid?: string | nu
     let cancelled = false
     const observedRevision = routeRevision.current
     const observedPositionRevision = positionRevision.current
+    const observedDevicePositions = { ...devicePositionRevisions.current }
     api.getSimulationSnapshot().then((snapshot: BackendSnapshot) => {
       // A fresh WS route/stop event supersedes this (possibly stale) GET.
       if (cancelled || routeRevision.current !== observedRevision) return
       const records = snapshot?.devices || {}
       const chosen = selectSnapshotDevice(snapshot, primaryUdid)
-      const normalized = Object.entries(records).map(([udid, raw]) =>
-        [udid, normalizeDeviceSnapshot(raw)] as const)
       setRuntimes((prev) => {
         // The response is authoritative; remove devices disconnected while
         // the WebSocket was offline rather than leaving ghost route overlays.
         const next: RuntimesMap = {}
-        for (const [udid, state] of normalized) {
-          next[udid] = {
-            ...(next[udid] ?? emptyRuntime(udid)), state: state.state,
-            currentPos: state.currentPos, routePath: state.routePath,
-            progress: state.progress, eta: state.eta,
-            distanceRemaining: state.distanceRemaining,
-            distanceTraveled: state.distanceTraveled,
-            currentSpeedKmh: state.speed * 3.6,
-          }
+        for (const udid of Object.keys(records)) {
+          const newerWsPosition = (devicePositionRevisions.current[udid] ?? 0) !==
+            (observedDevicePositions[udid] ?? 0)
+          next[udid] = mergeSnapshotRuntime(
+            prev[udid] ?? emptyRuntime(udid), records[udid], newerWsPosition)
         }
         return next
       })
-      if (!chosen) return
+      if (!chosen) {
+        // An old window may have closed mid-route; the route can complete and
+        // all devices disconnect before this new renderer attaches. Do not
+        // leave the old running toolbar/polyline visible after an empty GET.
+        // Keep unsaved waypoints, since they are a user draft, not an overlay.
+        setStatus((prev) => ({ ...prev, running: false, paused: false, state: 'idle' }))
+        setRoutePath([])
+        setEta(null)
+        return
+      }
       const state = normalizeDeviceSnapshot(records[chosen])
       // Do not rewind the map marker behind a newer WebSocket position tick.
       if (state.currentPos && observedPositionRevision === positionRevision.current) {
